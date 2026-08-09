@@ -21,7 +21,9 @@ local RUNNING_COUNT_ICON = "● "
 local DONE_ICON = "✓ "
 local ERROR_ICON = "✗ "
 local NO_MATCHES_HINT = "  No matches"
-local FOOTER_KEYS = { { "Enter", "open" }, { "Esc", "cancel" } }
+local CONFIRM_HINT = "  Ctrl+D again to delete"
+local MAIN_TASK_ID = "main"
+local FOOTER_KEYS = { { "Enter", "open" }, { "Ctrl+D", "delete" }, { "Esc", "cancel" } }
 local HINT_KEY = "Ctrl+X"
 -- The main chat has no status, so it falls through to MAIN.
 local ICONS = {
@@ -119,9 +121,13 @@ local function render()
     for _, span in ipairs(ListPicker.highlight_spans(task.name, words, base, match_style)) do
       line[#line + 1] = span
     end
+    local hint = selected and board.confirm == task.id and CONFIRM_HINT or ""
+    if hint ~= "" then
+      line[#line + 1] = { hint, "match_selected" }
+    end
     -- Rows with nothing on the right would otherwise end short of the border
     -- and read as padding on one side only, so the bar runs the full width.
-    local trail = board.width - 2 - dispw(icon) - dispw(task.name)
+    local trail = board.width - 2 - dispw(icon) - dispw(task.name) - dispw(hint)
     if trail > 0 then
       line[#line + 1] = { string.rep(" ", trail), base }
     end
@@ -176,6 +182,7 @@ local function move_sel(delta, wrap)
   if n == 0 then
     return
   end
+  board.confirm = nil
   local cur = Rows.index_of(board.rows, board.sel_id) or 1
   local idx
   if wrap then
@@ -207,11 +214,56 @@ local function open_selected()
   finish(true)
 end
 
+-- Ctrl+D asks first and deletes on the second press. A row that can never go
+-- (main, or a task still running) skips the question and goes straight to the
+-- host, which owns the refusal and its wording, so we only flash what it says.
+--
+-- remove() and refresh() both suspend and the picker can close meanwhile, so
+-- the board is checked after each. sel_id survives the refresh on purpose:
+-- rebuild() then seats the cursor on the row that slid into the deleted one's
+-- place, and we focus that row so the preview follows the cursor.
+local function delete_selected()
+  local idx = Rows.index_of(board.rows, board.sel_id)
+  if not idx then
+    return
+  end
+  local task = board.rows[idx].task
+  if Rows.deletable(task) and board.confirm ~= task.id then
+    board.confirm = task.id
+    render()
+    return
+  end
+  board.confirm = nil
+  local this_board = board
+  local _, err = maki.task.remove(task.id)
+  if board ~= this_board then
+    return
+  end
+  if err then
+    maki.ui.flash(err)
+    render()
+    return
+  end
+  if board.origin_id == task.id then
+    board.origin_id = MAIN_TASK_ID
+  end
+  refresh()
+  if board == this_board and board.sel_id then
+    local _, focus_err = maki.task.focus(board.sel_id)
+    if focus_err then
+      maki.ui.flash(focus_err)
+    end
+  end
+end
+
 local function handle_key(key)
   if key == "<C-c>" or key == "<C-x>" then
     finish(false)
   elseif key == "<Esc>" then
-    if board.input:is_empty() then
+    if board.confirm then
+      board.confirm = nil
+      render()
+    elseif board.input:is_empty() then
       finish(false)
     else
       board.input:clear()
@@ -228,7 +280,10 @@ local function handle_key(key)
     move_sel(page_size())
   elseif key == "<CR>" then
     open_selected()
+  elseif key == "<C-d>" then
+    delete_selected()
   elseif board.input:handle_key(key) ~= "ignored" then
+    board.confirm = nil
     rebuild()
     render()
   end

@@ -1990,6 +1990,23 @@ where
         self.touch();
     }
 
+    /// An append cannot take a transcript back out of the log, so this is a
+    /// rewrite. The subagent's tool outputs live in the shared map and are
+    /// most of its weight, so they go too.
+    pub fn remove_subagent(&mut self, id: &str, tool_ids: impl Fn(&M) -> Vec<String>) {
+        let removed = self.subagent_messages.remove(id);
+        if let Some(msgs) = &removed {
+            let stale: HashSet<String> = msgs.iter().flat_map(&tool_ids).collect();
+            self.tool_outputs
+                .retain(|tool_id, _| !stale.contains(tool_id));
+        }
+        let len = self.subagents.len();
+        self.subagents.retain(|sa| sa.tool_use_id != id);
+        if removed.is_some() || self.subagents.len() != len {
+            self.rewrite();
+        }
+    }
+
     pub fn usage_by_model(&self) -> &HashMap<String, StoredTokenUsage> {
         &self.usage_by_model
     }
