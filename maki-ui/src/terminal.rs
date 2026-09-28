@@ -18,6 +18,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_config::NotificationMethod;
 
 const FALLBACK_NOTIFICATION_MESSAGE: &str = "Maki needs attention";
+const NOTIFICATION_TITLE: &str = "Maki";
 const BELL_SEQUENCE: &str = "\u{7}";
 /// XTPUSHTITLE saves whatever title the shell left on the window, so the
 /// matching XTPOPTITLE on exit or suspend hands it back and no plugin
@@ -56,6 +57,7 @@ struct TmuxClient {
 pub(crate) enum ResolvedNotifier {
     Osc9,
     Bell,
+    Notify,
 }
 
 pub(crate) struct TerminalNotifier {
@@ -76,7 +78,10 @@ impl TerminalNotifier {
         self.notifier
     }
 
-    pub(crate) fn notify(&self, message: &str) -> std::io::Result<()> {
+    pub(crate) fn notify(&self, message: &str, reason: &str) -> std::io::Result<()> {
+        if matches!(self.notifier, ResolvedNotifier::Notify) {
+            return desktop_notification(message, reason);
+        }
         write_sequence(&notification_sequence(self.notifier, self.mux, message))
     }
 }
@@ -133,11 +138,16 @@ fn resolve_notifier(
         NotificationMethod::Off => None,
         NotificationMethod::Osc9 => Some(ResolvedNotifier::Osc9),
         NotificationMethod::Bell => Some(ResolvedNotifier::Bell),
-        NotificationMethod::Auto => Some(if auto_supports_osc9() {
-            ResolvedNotifier::Osc9
-        } else {
-            ResolvedNotifier::Bell
-        }),
+        NotificationMethod::Notify => Some(ResolvedNotifier::Notify),
+        // `auto`: OSC 9 in a supported terminal, otherwise desktop
+        // notifications.
+        NotificationMethod::Auto => {
+            if auto_supports_osc9() {
+                Some(ResolvedNotifier::Osc9)
+            } else {
+                Some(ResolvedNotifier::Notify)
+            }
+        }
     }
 }
 
@@ -232,7 +242,20 @@ fn notification_sequence(notifier: ResolvedNotifier, mux: TerminalMux, message: 
             mux.wrap_for_mux(format!("\u{1b}]9;{message}\u{7}"))
         }
         ResolvedNotifier::Bell => BELL_SEQUENCE.to_string(),
+        ResolvedNotifier::Notify => {
+            unreachable!("desktop notifications are sent in TerminalNotifier::notify")
+        }
     }
+}
+
+fn desktop_notification(message: &str, reason: &str) -> std::io::Result<()> {
+    notify_rust::Notification::new()
+        .appname(NOTIFICATION_TITLE)
+        .summary(reason)
+        .body(&sanitize_notification_message(message))
+        .show()
+        .map(|_| ())
+        .map_err(std::io::Error::other)
 }
 
 impl TerminalMux {
@@ -484,13 +507,20 @@ mod tests {
             resolve_notifier(NotificationMethod::Off, || panic!("auto detection ran")),
             None
         );
+        // `auto` prefers OSC 9 in a supported terminal, otherwise desktop
+        // notifications.
         assert_eq!(
             resolve_notifier(NotificationMethod::Auto, || true),
             Some(ResolvedNotifier::Osc9)
         );
         assert_eq!(
             resolve_notifier(NotificationMethod::Auto, || false),
-            Some(ResolvedNotifier::Bell)
+            Some(ResolvedNotifier::Notify),
+        );
+        // `notify` always uses the desktop notification backend.
+        assert_eq!(
+            resolve_notifier(NotificationMethod::Notify, || panic!("osc9 detection ran")),
+            Some(ResolvedNotifier::Notify),
         );
     }
 
