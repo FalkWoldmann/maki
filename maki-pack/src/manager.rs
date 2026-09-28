@@ -75,6 +75,7 @@ struct PackageDirs {
     staging: Vec<PathBuf>,
 }
 
+const PLUGIN_MANIFEST: &str = "plugin.toml";
 /// Where a clone keeps the refs that `git fetch` actually moves.
 const REMOTE_PREFIX: &str = "refs/remotes/origin/";
 /// What the default branch resolves against. See `resolve_revision`.
@@ -267,7 +268,6 @@ impl Manager {
         }
 
         let _guard = Lock::acquire_retrying(&paths::package_lock(&self.site, &spec.name))?;
-        let hooks = self.hooks_dir()?;
 
         // A recorded revision wins over `version`, even when nothing is on disk
         // yet. That is the case a lockfile exists for: a fresh machine must get
@@ -289,14 +289,14 @@ impl Manager {
             .transpose()?;
 
         let want = recorded.as_deref().map_or(Want::Ref, Want::Commit);
-        let work = self.ensure_work(&hooks, spec, want).await?;
+        let work = self.ensure_work(spec, want).await?;
         let rev = match recorded {
             Some(rev) => rev,
-            None => self.resolve_revision(&hooks, &work, spec).await?,
+            None => self.resolve_revision(&work, spec).await?,
         };
         let dest = paths::revision_dir(&self.site, &spec.name, &rev);
         if !dest.is_dir() {
-            self.materialize(&hooks, &work, &rev, &dest).await?;
+            self.materialize(&work, &rev, &dest).await?;
         }
 
         lock.record(&spec.name, &spec.src, &rev);
@@ -332,7 +332,6 @@ impl Manager {
         }
 
         let _guard = Lock::acquire_retrying(&paths::package_lock(&self.site, &spec.name))?;
-        let hooks = self.hooks_dir()?;
         // Restoring already knows the commit it wants, so a clone that still has
         // it can skip the fetch. Resolving `version` always needs fresh refs.
         let want = if restore_lockfile {
@@ -340,20 +339,18 @@ impl Manager {
         } else {
             Want::Ref
         };
-        let work = self.ensure_work(&hooks, spec, want).await?;
+        let work = self.ensure_work(spec, want).await?;
         let new_rev = if restore_lockfile {
             current.rev.clone()
         } else {
-            self.resolve_revision(&hooks, &work, spec).await?
+            self.resolve_revision(&work, spec).await?
         };
         if !revision_is_safe_component(&new_rev) {
             return Err(ManagerError::UnsafeRevision { rev: new_rev });
         }
-        let new_manifest = Self::read_manifest(&hooks, &work, &new_rev).await?;
-        let old_rev_available = current.rev == new_rev
-            || Self::revision_exists(&hooks, &work, &current.rev)
-                .await
-                .unwrap_or(false);
+        let new_manifest = Self::read_manifest(&work, &new_rev).await?;
+        let old_rev_available =
+            current.rev == new_rev || Self::revision_exists(&work, &current.rev).await;
         Ok(PreparedUpdate {
             spec: spec.clone(),
             old_rev: current.rev.clone(),
@@ -383,15 +380,13 @@ impl Manager {
         }
 
         let _guard = Lock::acquire_retrying(&paths::package_lock(&self.site, &prepared.spec.name))?;
-        let hooks = self.hooks_dir()?;
         let work = self
-            .ensure_work(&hooks, &prepared.spec, Want::Commit(&prepared.new_rev))
+            .ensure_work(&prepared.spec, Want::Commit(&prepared.new_rev))
             .await?;
         let dest = paths::revision_dir(&self.site, &prepared.spec.name, &prepared.new_rev);
         let existed = dest.is_dir();
         if !existed {
-            self.materialize(&hooks, &work, &prepared.new_rev, &dest)
-                .await?;
+            self.materialize(&work, &prepared.new_rev, &dest).await?;
         }
         lock.record(&prepared.spec.name, &prepared.spec.src, &prepared.new_rev);
         Ok(Installed {
@@ -479,37 +474,32 @@ impl Manager {
     /// at all. A commit is different. Objects do not move, so a clone that
     /// already has the one the lockfile names is current enough to skip the
     /// fetch.
-    async fn ensure_work(
-        &self,
-        hooks: &Path,
-        spec: &Spec,
-        want: Want<'_>,
-    ) -> Result<PathBuf, ManagerError> {
+    async fn ensure_work(&self, spec: &Spec, want: Want<'_>) -> Result<PathBuf, ManagerError> {
         let work = self.work_dir(&spec.name);
 
         // A cached working copy is only reusable if it is a copy of the source
         // being asked for. Reusing one by name alone would materialize the old
         // repository's code while recording the new source.
-        if work.join(".git").is_dir() && !self.work_matches_source(&work, &spec.src).await {
+        if git::is_repository(&work) && !self.work_matches_source(&work, &spec.src).await {
             fs::remove_dir_all(&work).map_err(|source| ManagerError::Io {
                 path: work.clone(),
                 source,
             })?;
         }
-        if !work.join(".git").is_dir() {
+        if !git::is_repository(&work) {
             // A fresh clone already has everything a fetch would have brought.
-            self.clone_into(hooks, &spec.src, &work).await?;
+            self.clone_into(&spec.src, &work).await?;
             return Ok(work);
         }
 
         let have = match want {
-            Want::Commit(rev) => git::run(git::has_commit_args(hooks, rev), work.clone())
+            Want::Commit(rev) => git::resolve_commit(work.clone(), rev.to_owned())
                 .await
                 .is_ok(),
             Want::Ref => false,
         };
         if !have {
-            git::run(git::fetch_args(hooks), work.clone()).await?;
+            git::fetch(work.clone()).await?;
         }
         Ok(work)
     }
@@ -519,15 +509,9 @@ impl Manager {
     /// A copy whose remote cannot be read is treated as not matching, so the
     /// safe outcome is a fresh clone rather than code from an unknown origin.
     async fn work_matches_source(&self, work: &Path, src: &str) -> bool {
-        let args = vec![
-            "remote".to_owned(),
-            "get-url".to_owned(),
-            "origin".to_owned(),
-        ];
-        match git::run(args, work.to_path_buf()).await {
-            Ok(out) => out.stdout.trim() == src.trim(),
-            Err(_) => false,
-        }
+        git::origin_url(work.to_path_buf())
+            .await
+            .is_ok_and(|url| git::same_source(&url, src))
     }
 
     /// The bare working copy git operates on. Revisions are copied out of it,
@@ -536,60 +520,20 @@ impl Manager {
         paths::package_root(&self.site, name).join(".work")
     }
 
-    fn hooks_dir(&self) -> Result<PathBuf, ManagerError> {
-        let dir = paths::empty_hooks_dir(&self.site);
-        fs::create_dir_all(&dir).map_err(|source| ManagerError::Io {
-            path: dir.clone(),
-            source,
-        })?;
-        Ok(dir)
-    }
-
-    async fn clone_into(&self, hooks: &Path, src: &str, work: &Path) -> Result<(), ManagerError> {
-        // The package root, and the directory the clone itself runs from, since
-        // git reads the config of whatever repository it starts in and maki's
-        // own process directory is one the agent may be editing. `work` always
-        // has a parent, the site dir standing in only so that no path shape can
-        // ever hand the clone back to the cwd.
+    async fn clone_into(&self, src: &str, work: &Path) -> Result<(), ManagerError> {
         let parent = work.parent().unwrap_or(self.site.as_path());
         fs::create_dir_all(parent).map_err(|source| ManagerError::Io {
             path: parent.to_path_buf(),
             source,
         })?;
-        // A clone killed halfway leaves a directory behind with no `.git` in
-        // it, and git refuses to clone into a directory that is not empty. So
-        // every attempt starts from nothing, not just the retry below.
-        let clear = || {
-            let _ = fs::remove_dir_all(work);
-        };
-        // A blobless clone is much smaller, but an older server refuses the
-        // filter outright, so fall back to a full clone rather than failing.
-        clear();
-        match git::run(
-            git::clone_args(hooks, src, work, true),
-            parent.to_path_buf(),
-        )
-        .await
-        {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                clear();
-                git::run(
-                    git::clone_args(hooks, src, work, false),
-                    parent.to_path_buf(),
-                )
-                .await?;
-                Ok(())
-            }
-        }
+        // A clone killed halfway leaves a directory behind, and a clone refuses
+        // a destination that is not empty, so every attempt starts from nothing.
+        let _ = fs::remove_dir_all(work);
+        git::clone(src.to_owned(), work.to_path_buf()).await?;
+        Ok(())
     }
 
-    async fn resolve_revision(
-        &self,
-        hooks: &Path,
-        work: &Path,
-        spec: &Spec,
-    ) -> Result<String, ManagerError> {
+    async fn resolve_revision(&self, work: &Path, spec: &Spec) -> Result<String, ManagerError> {
         // Tried in order, first one that resolves wins.
         //
         // A branch name has the same problem the default branch has: `git
@@ -614,8 +558,8 @@ impl Manager {
                     rev: candidate.clone(),
                 });
             }
-            match git::run(git::rev_parse_args(hooks, candidate), work.to_path_buf()).await {
-                Ok(out) => return Ok(out.stdout.trim().to_owned()),
+            match git::resolve_commit(work.to_path_buf(), candidate.clone()).await {
+                Ok(rev) => return Ok(rev),
                 Err(e) => last = Some(e),
             }
         }
@@ -625,52 +569,35 @@ impl Manager {
     /// Whether the work clone still holds this revision. A recorded one can go
     /// missing after the remote rewrote history, and a review that cannot name
     /// what the package is moving away from still has to be shown.
-    async fn revision_exists(
-        hooks: &Path,
-        work: &Path,
-        revision: &str,
-    ) -> Result<bool, ManagerError> {
-        match git::run(git::rev_parse_args(hooks, revision), work.to_path_buf()).await {
-            Ok(_) => Ok(true),
-            Err(GitError::Failed { .. }) => Ok(false),
-            Err(error) => Err(error.into()),
-        }
+    async fn revision_exists(work: &Path, revision: &str) -> bool {
+        git::resolve_commit(work.to_path_buf(), revision.to_owned())
+            .await
+            .is_ok()
     }
 
-    async fn read_manifest(
-        hooks: &Path,
-        work: &Path,
-        revision: &str,
-    ) -> Result<Option<String>, ManagerError> {
-        let unsafe_revision = || ManagerError::UnsafeRevision {
-            rev: revision.to_owned(),
-        };
-        let exists = git::manifest_exists_args(hooks, revision).ok_or_else(unsafe_revision)?;
-        let found = git::run(exists, work.to_path_buf()).await?;
-        if found.stdout.trim().is_empty() {
-            return Ok(None);
+    async fn read_manifest(work: &Path, revision: &str) -> Result<Option<String>, ManagerError> {
+        if !git::revision_is_safe(revision) {
+            return Err(ManagerError::UnsafeRevision {
+                rev: revision.to_owned(),
+            });
         }
-        let args = git::read_manifest_args(hooks, revision).ok_or_else(unsafe_revision)?;
-        git::run(args, work.to_path_buf())
-            .await
-            .map(|output| Some(output.stdout))
-            .map_err(Into::into)
+        Ok(git::read_file(work.to_path_buf(), revision.to_owned(), PLUGIN_MANIFEST).await?)
     }
 
     /// Builds the revision directory. It is written under a temporary name and
     /// renamed, so a session never sees a half-populated revision.
-    async fn materialize(
-        &self,
-        hooks: &Path,
-        work: &Path,
-        rev: &str,
-        dest: &Path,
-    ) -> Result<(), ManagerError> {
-        git::run(git::checkout_args(hooks, rev), work.to_path_buf()).await?;
+    async fn materialize(&self, work: &Path, rev: &str, dest: &Path) -> Result<(), ManagerError> {
+        // Exported first and copied from there, so the symlink policy in
+        // `copy_tree` sees the files exactly as they were committed.
+        let export = dest.with_extension("export");
+        let _ = fs::remove_dir_all(&export);
+        git::export_tree(work.to_path_buf(), rev.to_owned(), export.clone()).await?;
 
         let staging = dest.with_extension("incoming");
         let _ = fs::remove_dir_all(&staging);
-        copy_tree(work, &staging).map_err(|source| ManagerError::Io {
+        let copied = copy_tree(&export, &staging);
+        discard(&export, "exported revision");
+        copied.map_err(|source| ManagerError::Io {
             path: staging.clone(),
             source,
         })?;
@@ -940,13 +867,7 @@ mod tests {
         fs::create_dir_all(repo.join("plugin")).unwrap();
         fs::write(repo.join("plugin").join("init.lua"), "-- demo\n").unwrap();
 
-        let run = |args: Vec<&str>| {
-            smol::block_on(git::run(
-                args.iter().map(|a| (*a).to_owned()).collect(),
-                repo.clone(),
-            ))
-            .unwrap_or_else(|e| panic!("git {args:?} failed while building the fixture: {e}"))
-        };
+        let run = |args: Vec<&str>| fixture_git(&repo, &args);
         run(vec!["init", "--quiet"]);
         run(vec!["config", "user.email", "t@example.com"]);
         run(vec!["config", "user.name", "test"]);
@@ -965,17 +886,19 @@ mod tests {
 
     fn commit_changes(origin: &Path, message: &str) {
         for args in [vec!["add", "."], vec!["commit", "--quiet", "-m", message]] {
-            let args = args.into_iter().map(str::to_owned).collect();
-            smol::block_on(git::run(args, origin.to_path_buf())).unwrap();
+            fixture_git(origin, &args);
         }
     }
 
-    fn fixture_git(origin: &Path, args: &[&str]) -> git::GitOutput {
-        smol::block_on(git::run(
-            args.iter().map(|arg| (*arg).to_owned()).collect(),
-            origin.to_path_buf(),
-        ))
-        .unwrap()
+    /// Runs the git binary to shape fixtures, the way a package author would.
+    fn fixture_git(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} could not start: {e}"));
+        assert!(output.status.success(), "git {args:?} failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
     /// A site with one installable `demo` repository, plus the calls every
@@ -1099,14 +1022,8 @@ mod tests {
         let dir = site();
         let origin = origin_repo(dir.path(), None);
         fixture_git(&origin, &["tag", "-a", "v2.0.0", "-m", "release"]);
-        let commit = fixture_git(&origin, &["rev-parse", "HEAD"])
-            .stdout
-            .trim()
-            .to_owned();
-        let tag_object = fixture_git(&origin, &["rev-parse", "v2.0.0"])
-            .stdout
-            .trim()
-            .to_owned();
+        let commit = fixture_git(&origin, &["rev-parse", "HEAD"]);
+        let tag_object = fixture_git(&origin, &["rev-parse", "v2.0.0"]);
         assert_ne!(tag_object, commit, "the fixture tag must be annotated");
 
         let mgr = Manager::new(dir.path().join("site"));
@@ -1161,13 +1078,7 @@ mod tests {
     fn dropping_the_lock_entry_picks_up_what_landed_upstream() {
         let dir = site();
         let origin = origin_repo(dir.path(), None);
-        let git = |args: Vec<&str>| {
-            smol::block_on(git::run(
-                args.iter().map(|a| (*a).to_owned()).collect(),
-                origin.clone(),
-            ))
-            .unwrap()
-        };
+        let git = |args: Vec<&str>| fixture_git(&origin, &args);
 
         let mgr = Manager::new(dir.path().join("site"));
         let mut lock = Lockfile::default();
@@ -1509,16 +1420,10 @@ mod tests {
 
         fs::write(fixture.origin.join("plugin.toml"), MANIFEST).unwrap();
         commit_changes(&fixture.origin, "recorded later");
-        let recorded = fixture_git(&fixture.origin, &["rev-parse", "HEAD"])
-            .stdout
-            .trim()
-            .to_owned();
+        let recorded = fixture_git(&fixture.origin, &["rev-parse", "HEAD"]);
         fixture.lock.record("demo", &fixture.spec.src, &recorded);
         let work = paths::package_root(&fixture.site, "demo").join(".work");
-        let tracked = fixture_git(&work, &["rev-parse", "refs/remotes/origin/HEAD"])
-            .stdout
-            .trim()
-            .to_owned();
+        let tracked = fixture_git(&work, &["rev-parse", "refs/remotes/origin/HEAD"]);
         assert_ne!(tracked, recorded, "the work clone must start stale");
 
         let prepared = fixture.prepare(true).unwrap();

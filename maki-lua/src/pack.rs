@@ -1938,12 +1938,14 @@ mod tests {
         new_rev: String,
     }
 
-    fn run_git(repo: &Path, args: &[&str]) -> maki_pack::git::GitOutput {
-        smol::block_on(maki_pack::git::run(
-            args.iter().map(|arg| (*arg).to_owned()).collect(),
-            repo.to_path_buf(),
-        ))
-        .unwrap()
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
     fn update_fixture() -> UpdateFixture {
@@ -1987,10 +1989,7 @@ mod tests {
         }
         run_git(&origin, &["add", "."]);
         run_git(&origin, &["commit", "--quiet", "-m", "later"]);
-        let new_rev = run_git(&origin, &["rev-parse", "HEAD"])
-            .stdout
-            .trim()
-            .to_owned();
+        let new_rev = run_git(&origin, &["rev-parse", "HEAD"]);
         let declared = vec![crate::api::pack::Declared {
             spec,
             load: crate::api::pack::LoadMode::Eager,
@@ -2290,10 +2289,7 @@ mod tests {
         fs::create_dir_all(&fixture.site).unwrap();
         fs::write(&approval_path, "not json").unwrap();
         let work = maki_pack::paths::package_root(&fixture.site, "demo").join(".work");
-        let before = run_git(&work, &["rev-parse", "refs/remotes/origin/HEAD"])
-            .stdout
-            .trim()
-            .to_owned();
+        let before = run_git(&work, &["rev-parse", "refs/remotes/origin/HEAD"]);
 
         let (report, prompt) = finish_preparation(prepare_pack_ops_at(
             &[update_operation(false)],
@@ -2307,10 +2303,7 @@ mod tests {
         assert!(report.updated.is_empty());
         assert_eq!(report.failures.len(), 1);
         assert!(report.failures[0].contains("approval store is unreadable"));
-        let after = run_git(&work, &["rev-parse", "refs/remotes/origin/HEAD"])
-            .stdout
-            .trim()
-            .to_owned();
+        let after = run_git(&work, &["rev-parse", "refs/remotes/origin/HEAD"]);
         assert_eq!(before, after, "the work clone must not fetch");
     }
 

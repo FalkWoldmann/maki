@@ -34,12 +34,6 @@ pub fn revision_dir(site: &Path, name: &str, sha: &str) -> PathBuf {
     package_root(site, name).join(sha)
 }
 
-/// An empty directory pointed at by `core.hooksPath`, so no repository hook can
-/// run during a clone, a fetch, or a checkout.
-pub fn empty_hooks_dir(site: &Path) -> PathBuf {
-    site.join(".nohooks")
-}
-
 /// Lock covering one package's checkouts.
 pub fn package_lock(site: &Path, name: &str) -> PathBuf {
     site.join("pack")
