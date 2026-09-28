@@ -2,7 +2,7 @@ local truncate = require("maki.truncate")
 local ToolView = require("maki.tool_view")
 local output_limits = require("maki.output_limits")
 local partial = require("maki.partial")
-local jq_inline = require("jq_inline")
+local inline = require("inline")
 
 local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_UNSUPPORTED_FLAGS = {
@@ -378,8 +378,8 @@ maki.api.register_tool({
 
     ctx:set_deadline(timeout_secs)
 
-    local inline_jq = jq_inline.parse(command)
-    local rewritten = not inline_jq and rtk_rewrite(command, ctx)
+    local plan = inline.parse(command)
+    local rewritten = not plan and rtk_rewrite(command, ctx)
     if rewritten then
       command = rewritten
     end
@@ -444,23 +444,47 @@ maki.api.register_tool({
       view:append(line)
     end
 
-    if inline_jq then
-      local out, err = jq_inline.run(inline_jq, workdir or cwd, maki.fs.read)
-      for line in (out or err .. "\n"):gmatch("([^\n]*)\n") do
+    local function emit(text)
+      if text == "" then
+        return
+      end
+      for line in (text:gsub("\n$", "") .. "\n"):gmatch("([^\n]*)\n") do
         on_line(nil, line)
       end
-      finish(out and 0 or jq_inline.ERROR_EXIT)
+    end
+
+    if plan and not plan.upstream then
+      local out, code = inline.run(plan, workdir or cwd, maki.fs.read)
+      emit(out)
+      finish(code)
       return nil
     end
 
-    maki.fn.jobstart(command, {
+    -- `upstream | jq`: the upstream runs as usual, its stderr streams as usual,
+    -- and its stdout is filtered in-process once it exits. Like bash without
+    -- pipefail, the exit code is jq's.
+    local job_command, on_stdout, on_exit = command, on_line, function(_, code)
+      finish(code)
+    end
+    if plan then
+      local piped = {}
+      job_command = plan.upstream
+      on_stdout = function(_, line)
+        piped[#piped + 1] = line
+      end
+      on_exit = function()
+        local out, err = inline.filter(plan, table.concat(piped, "\n"))
+        emit(out or err)
+        finish(out and 0 or inline.JQ_ERROR_EXIT)
+      end
+    end
+
+    maki.fn.jobstart(job_command, {
       cwd = workdir,
       env = { GIT_TERMINAL_PROMPT = "0" },
-      on_stdout = on_line,
+      on_stdout = on_stdout,
       on_stderr = on_line,
-      on_exit = function(_, code)
-        finish(code)
-      end,
+      on_exit = on_exit,
     })
 
     -- Esc or deadline: hand back the lines streamed so far, so the model

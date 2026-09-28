@@ -751,3 +751,29 @@ fn bash_reports_an_inline_jq_failure_like_jq() {
     assert!(err.contains("Could not open"), "{err}");
     assert!(err.contains(JQ_EXIT_LINE), "{err}");
 }
+
+/// The upstream is a real process; only the filtering is in-process, which the
+/// compact answer proves.
+#[test]
+fn bash_filters_a_piped_upstream_in_process() {
+    let out = run_bash(r#"printf '%s' '{"deps":{"a":"1"}}' | jq .deps"#).unwrap();
+    assert_eq!(out.trim(), r#"{"a":"1"}"#);
+}
+
+#[test]
+fn bash_keeps_upstream_stderr_and_uses_jq_exit_code() {
+    let out = run_bash(r#"sh -c 'echo warn >&2; echo "{\"a\":1}"; exit 3' | jq .a"#).unwrap();
+    assert!(out.contains("warn"), "{out}");
+    assert!(out.contains('1'), "{out}");
+}
+
+#[test]
+fn bash_reads_cat_itself() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("package.json");
+    std::fs::write(&file, PACKAGE_JSON).unwrap();
+    let piped = run_bash(&format!("cat {} | jq .deps", file.display())).unwrap();
+    assert_eq!(piped.trim(), r#"{"a":"1"}"#);
+    let plain = run_bash(&format!("cat {}", file.display())).unwrap();
+    assert_eq!(plain.trim(), PACKAGE_JSON);
+}
