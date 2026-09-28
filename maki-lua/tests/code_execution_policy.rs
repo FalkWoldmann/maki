@@ -691,3 +691,20 @@ fn restore_expanded_shows_full_script_beyond_cap() {
         "output must stay below the expanded script"
     );
 }
+
+/// jq is bound in-process, with no jq tool or binary involved.
+#[test]
+fn jq_filters_structured_text_in_process() {
+    let out = run_code(
+        "print(await jq(filter='.package.name', input='[package]\\nname = \"maki\"', from_format='toml', to_format='raw'))",
+    )
+    .unwrap();
+    assert!(out.contains("maki"), "{out}");
+}
+
+#[test]
+fn jq_errors_reach_the_script() {
+    let out = run_code("ok, bad = await gather(jq(filter='.a', input='{\"a\":1}'), jq(filter='.[', input='{}'))\nprint(ok)\nprint(bad)").unwrap();
+    assert!(out.contains('1'), "{out}");
+    assert!(out.contains(ERROR_PREFIX), "{out}");
+}

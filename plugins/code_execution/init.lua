@@ -129,6 +129,7 @@ Use for chained/dependent tool calls and filtering/processing results, e.g. filt
 - All tools are async and return strings: `result = await read(path='file.txt', offset=1, limit=0)`. Parse output yourself.
 - Concurrency: `a, b = await gather(read(path='a.py', offset=1, limit=0), grep(pattern='x'))`. Pass calls directly, never wrapped in `async def`.
 - Available libs: re, asyncio, sys, os, json. No other imports, no classes, no network access. `open()` works on text files.
+- `await jq(filter='.deps | keys', input=text, from_format='toml')` runs a jq filter over json/yaml/toml/xml/csv/tsv (default json in and out, `to_format` to change); filter output before printing it.
 - Fresh sandbox each run: no state persists between executions.
 - 30s script timeout (`timeout` param); time awaiting tool calls doesn't count.
 - Skip it when a single tool call needs no transformation.
@@ -360,6 +361,16 @@ local function handler(input, ctx)
         return maki.agent.call_tool(ctx, name, tool_input, { timeout = deadline })
       end
     end
+  end
+
+  -- In-process, so scripts get it without a jq binary. A tool that happens to
+  -- be named jq, bound by the loop above, wins.
+  tools.jq = tools.jq or function(args)
+    return maki.jq.run(args.filter, args.input or "", {
+      from = args.from_format,
+      to = args.to_format,
+      slurp = args.slurp,
+    })
   end
 
   local result, err = maki.interpreter.run(input.code, {
