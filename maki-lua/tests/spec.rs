@@ -8,6 +8,7 @@ use test_case::test_case;
 #[test_case("edit", include_str!("../../plugins/edit/tests/spec.lua") ; "edit_plugin_spec")]
 #[test_case("index", include_str!("../../plugins/index/tests/spec.lua") ; "index_plugin_spec")]
 #[test_case("lib", include_str!("../../plugins/lib/tests/spec.lua") ; "lib_spec")]
+#[test_case("jq", include_str!("../../plugins/jq/tests/spec.lua") ; "jq_plugin_spec")]
 #[test_case("list", include_str!("../../plugins/list/tests/spec.lua") ; "list_plugin_spec")]
 #[test_case("memory", include_str!("../../plugins/memory/tests/spec.lua") ; "memory_plugin_spec")]
 #[test_case("question", include_str!("../../plugins/question/tests/spec.lua") ; "question_plugin_spec")]

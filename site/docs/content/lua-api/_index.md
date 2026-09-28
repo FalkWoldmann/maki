@@ -137,6 +137,7 @@ The rules:
 | [`maki.ui.Buf`](#maki-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`maki.uv`](#maki-uv) | System and environment utilities, modelled after `vim.uv`. |
 | [`maki.yaml`](#maki-yaml) | YAML encoding and decoding. |
+| [`maki.jq`](#maki-jq) | jq filters over JSON, YAML, TOML, XML, CBOR, CSV, and TSV, run |
 
 ## maki {#maki}
 
@@ -6526,6 +6527,43 @@ sequences become 1-indexed arrays.
 ```lua
 local t, err = maki.yaml.decode("name: maki\nversion: 1")
 print(t.name) -- maki
+```
+
+
+## maki.jq {#maki-jq}
+
+jq filters over JSON, YAML, TOML, XML, CBOR, CSV, and TSV, run
+in-process with jaq.
+
+```lua
+local names = maki.jq.run(".[].name", json_text)
+```
+
+---
+
+### `maki.jq.run()` {#maki-jq-run}
+
+```lua
+maki.jq.run({filter}, {input}, {opts?})
+```
+
+Run a jq filter over structured text. Input and output can each be JSON,
+YAML, TOML, XML, CBOR, CSV, TSV, or raw lines, so one filter can read a
+`Cargo.toml` and answer in JSON. Every result goes on its own line.
+
+**Parameters:**
+
+- `{filter}` (`string`) A jq filter, e.g. `.dependencies | keys`.
+- `{input}` (`string`) The text to filter.
+- `{opts?}` (`table?`) `from` and `to` name the formats (default `"json"`); `slurp = true` collects all input values into one array.
+
+**Returns:** (`string?`, `string?`) The filter's output, or nil plus an error.
+
+**Example:**
+
+```lua
+local out, err = maki.jq.run(".package.name", maki.fs.read("Cargo.toml"), { from = "toml" })
+print(out) -- "maki"
 ```
 
 

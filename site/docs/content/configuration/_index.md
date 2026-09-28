@@ -297,6 +297,13 @@ maki.setup({
 |-------|------|---------|-----|-------------|
 | `max_file_size_mb` | integer | `2` | 1 | Refuse to index files larger than this many MB. |
 
+### `plugins.jq`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+
 ### `plugins.read`
 
 | Field | Type | Default | Min | Description |

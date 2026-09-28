@@ -114,7 +114,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
 ///
 /// A plugin belongs here while what it does is worth shipping but what it
 /// costs at scale is not yet known.
-pub const OPTIONAL_BUILTINS: &[&str] = &["completion"];
+pub const OPTIONAL_BUILTINS: &[&str] = &["completion", "jq"];
 
 /// These used to be their own `tools.<name>` tables and are now edit plugin
 /// options; the config layer uses this list to reject the old form with a

@@ -106,6 +106,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/grep"),
     },
     BundledPlugin {
+        name: "jq",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/jq"),
+    },
+    BundledPlugin {
         name: "glob",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/glob"),
     },
