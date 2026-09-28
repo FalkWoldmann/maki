@@ -2,6 +2,7 @@ local truncate = require("maki.truncate")
 local ToolView = require("maki.tool_view")
 local output_limits = require("maki.output_limits")
 local partial = require("maki.partial")
+local jq_inline = require("jq_inline")
 
 local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_UNSUPPORTED_FLAGS = {
@@ -377,7 +378,8 @@ maki.api.register_tool({
 
     ctx:set_deadline(timeout_secs)
 
-    local rewritten = rtk_rewrite(command, ctx)
+    local inline_jq = jq_inline.parse(command)
+    local rewritten = not inline_jq and rtk_rewrite(command, ctx)
     if rewritten then
       command = rewritten
     end
@@ -433,25 +435,29 @@ maki.api.register_tool({
 
     view:append({ { "Waiting for output...", "dim" } })
 
+    local function on_line(_, line)
+      if not has_output then
+        has_output = true
+        view:clear()
+      end
+      append_line(output_parts, line)
+      view:append(line)
+    end
+
+    if inline_jq then
+      local out, err = jq_inline.run(inline_jq, workdir or cwd, maki.fs.read)
+      for line in (out or err .. "\n"):gmatch("([^\n]*)\n") do
+        on_line(nil, line)
+      end
+      finish(out and 0 or jq_inline.ERROR_EXIT)
+      return nil
+    end
+
     maki.fn.jobstart(command, {
       cwd = workdir,
       env = { GIT_TERMINAL_PROMPT = "0" },
-      on_stdout = function(_, line)
-        if not has_output then
-          has_output = true
-          view:clear()
-        end
-        append_line(output_parts, line)
-        view:append(line)
-      end,
-      on_stderr = function(_, line)
-        if not has_output then
-          has_output = true
-          view:clear()
-        end
-        append_line(output_parts, line)
-        view:append(line)
-      end,
+      on_stdout = on_line,
+      on_stderr = on_line,
       on_exit = function(_, code)
         finish(code)
       end,

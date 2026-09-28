@@ -691,3 +691,63 @@ fn restore_expanded_shows_full_script_beyond_cap() {
         "output must stay below the expanded script"
     );
 }
+
+/// jq is bound in-process even though no jq tool is registered here.
+#[test]
+fn jq_filters_structured_text_without_a_jq_tool() {
+    let out = run_code(
+        "print(await jq(filter='.package.name', input='[package]\\nname = \"maki\"', from_format='toml', to_format='raw'))",
+    )
+    .unwrap();
+    assert!(out.contains("maki"), "{out}");
+}
+
+#[test]
+fn jq_errors_reach_the_script() {
+    let out = run_code("ok, bad = await gather(jq(filter='.a', input='{\"a\":1}'), jq(filter='.[', input='{}'))\nprint(ok)\nprint(bad)").unwrap();
+    assert!(out.contains('1'), "{out}");
+    assert!(out.contains(ERROR_PREFIX), "{out}");
+}
+
+const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
+const JQ_EXIT_LINE: &str = "Exit code: 5";
+
+fn run_bash(command: &str) -> Result<String, String> {
+    let (reg, host) = setup();
+    host.load_source("bash", BASH_SRC)
+        .expect("bash plugin should load");
+    exec_bash(&reg, command)
+}
+
+fn exec_bash(reg: &Arc<ToolRegistry>, command: &str) -> Result<String, String> {
+    run_tool(
+        reg,
+        &shaped_ctx(reg, |_| {}),
+        "bash",
+        serde_json::json!({ "command": command }),
+    )
+}
+
+const PACKAGE_JSON: &str = r#"{"name":"maki","deps":{"a":"1"}}"#;
+
+/// The jq and jaq binaries pretty-print by default; only the in-process path
+/// answers compact, so the shape of the output proves where it ran.
+#[test_case::test_case("jq" ; "jq")]
+#[test_case::test_case("jaq" ; "jaq")]
+fn bash_runs_a_plain_jq_command_in_process(binary: &str) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("package.json");
+    std::fs::write(&file, PACKAGE_JSON).unwrap();
+    let out = run_bash(&format!("{binary} .deps {}", file.display())).unwrap();
+    assert_eq!(out.trim(), r#"{"a":"1"}"#);
+    let raw = run_bash(&format!("{binary} -r .name {}", file.display())).unwrap();
+    assert_eq!(raw.trim(), "maki");
+}
+
+/// jq itself exits 2 on a missing file; 5 marks the in-process path.
+#[test]
+fn bash_reports_an_inline_jq_failure_like_jq() {
+    let err = run_bash("jaq . /definitely/missing.json").unwrap_err();
+    assert!(err.contains("Could not open"), "{err}");
+    assert!(err.contains(JQ_EXIT_LINE), "{err}");
+}

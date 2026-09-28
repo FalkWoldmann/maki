@@ -5,7 +5,7 @@ local helpers = require("jq_helpers")
 
 local DESCRIPTION = [[Run a jq filter over structured data and return only what the filter selects.
 
-- Reads JSON, YAML, TOML, XML, CSV, TSV, CBOR, or raw lines (`from`), writes any of them (`to`, default json).
+- Reads JSON, YAML, TOML, XML, CSV, TSV, CBOR, or raw lines (`from_format`), writes any of them (`to_format`, default json).
 - Give either `path` (format guessed from the extension) or `input` text, e.g. JSON printed by another tool.
 - Output is compact, one result per line. Filter before reading: `.dependencies | keys`, `.[] | select(.size > 1000) | .name`.]]
 
@@ -28,12 +28,12 @@ maki.api.register_tool({
       filter = { type = "string", description = "jq filter, e.g. `.items[] | .name`", required = true },
       path = { type = "string", description = "Absolute path of a file to filter" },
       input = { type = "string", description = "Text to filter when there is no file" },
-      from = {
+      from_format = {
         type = "string",
         enum = helpers.FORMATS,
         description = "Input format; defaults from the path's extension, else json",
       },
-      to = { type = "string", enum = helpers.FORMATS, description = "Output format (default json)" },
+      to_format = { type = "string", enum = helpers.FORMATS, description = "Output format (default json)" },
       slurp = { type = "boolean", description = "Collect all input values into one array first" },
     },
   },

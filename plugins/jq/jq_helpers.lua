@@ -29,8 +29,8 @@ function M.run(input, read)
   end
 
   local out, err = maki.jq.run(input.filter, text, {
-    from = input.from or M.format_for(input.path),
-    to = input.to,
+    from = input.from_format or M.format_for(input.path),
+    to = input.to_format,
     slurp = input.slurp,
   })
   if not out then
