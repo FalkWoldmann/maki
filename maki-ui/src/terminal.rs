@@ -16,6 +16,8 @@ use crossterm::event::{
 use crossterm::event::{DisableFocusChange, EnableFocusChange};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_config::NotificationMethod;
+#[cfg(unix)]
+use rustix::process::{Signal, getpid, kill_process};
 
 const FALLBACK_NOTIFICATION_MESSAGE: &str = "Maki needs attention";
 const BELL_SEQUENCE: &str = "\u{7}";
@@ -294,9 +296,7 @@ impl Drop for TerminalGuard {
 pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
     teardown();
     #[cfg(unix)]
-    unsafe {
-        libc::raise(libc::SIGTSTP);
-    }
+    let _ = kill_process(getpid(), Signal::TSTP);
     resume(terminal);
 }
 

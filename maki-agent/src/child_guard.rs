@@ -3,6 +3,8 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use async_process::Child;
+#[cfg(unix)]
+use rustix::process::{Pid, Signal, WaitOptions, kill_process_group, waitpid};
 
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -56,10 +58,10 @@ impl ChildGuard {
 
     #[cfg(unix)]
     fn signal_kill(&self) {
-        if self.child.is_some() {
-            unsafe {
-                libc::killpg(self.pid as i32, libc::SIGKILL);
-            }
+        if self.child.is_some()
+            && let Some(pid) = Pid::from_raw(self.pid as i32)
+        {
+            let _ = kill_process_group(pid, Signal::KILL);
         }
     }
 
@@ -76,10 +78,10 @@ impl ChildGuard {
     // block the async executor.
     #[cfg(unix)]
     fn reap_nonblocking(&mut self) {
-        if self.child.take().is_some() {
-            unsafe {
-                libc::waitpid(self.pid as i32, std::ptr::null_mut(), libc::WNOHANG);
-            }
+        if self.child.take().is_some()
+            && let Some(pid) = Pid::from_raw(self.pid as i32)
+        {
+            let _ = waitpid(Some(pid), WaitOptions::NOHANG);
         }
     }
 
@@ -106,6 +108,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use async_process::Child;
+    use rustix::process::{Pid, setsid, test_kill_process};
 
     use super::ChildGuard;
 
@@ -114,7 +117,7 @@ mod tests {
         std_cmd.arg("60");
         unsafe {
             std_cmd.pre_exec(|| {
-                libc::setsid();
+                setsid()?;
                 Ok(())
             });
         }
@@ -123,7 +126,7 @@ mod tests {
     }
 
     fn is_alive(pid: u32) -> bool {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        Pid::from_raw(pid as i32).is_some_and(|pid| test_kill_process(pid).is_ok())
     }
 
     fn wait_for_death(pid: u32) {

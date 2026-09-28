@@ -13,6 +13,8 @@ use maki_agent::{
     AgentConfig, CancelToken, CancelTrigger, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 use maki_providers::{Message, strip_provider_keys};
+#[cfg(unix)]
+use rustix::process::setsid;
 
 use super::App;
 
@@ -223,7 +225,7 @@ async fn run_command(
     #[cfg(unix)]
     unsafe {
         std_cmd.pre_exec(|| {
-            libc::setsid();
+            setsid()?;
             Ok(())
         });
     }

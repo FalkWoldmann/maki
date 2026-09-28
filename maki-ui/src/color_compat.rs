@@ -136,8 +136,11 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 mod probe {
     use std::fs::File;
     use std::io::{IsTerminal, Write, stdin, stdout};
-    use std::os::fd::{AsRawFd, RawFd};
+    use std::os::fd::{AsFd, OwnedFd};
     use std::time::{Duration, Instant};
+
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::io::read;
 
     use super::{da1_answered, decrqss_reply_supports_rgb};
 
@@ -150,7 +153,7 @@ mod probe {
     }
 
     fn try_probe() -> Option<bool> {
-        let (_owned, fd) = open_tty()?;
+        let tty = open_tty()?;
         let mut out = stdout().lock();
         out.write_all(QUERY).ok()?;
         out.flush().ok()?;
@@ -160,36 +163,33 @@ mod probe {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
-            if !wait_readable(fd, remaining) {
+            if !wait_readable(&tty, remaining) {
                 break;
             }
             let mut chunk = [0u8; 256];
-            let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-            if n <= 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n as usize]);
+            let n = match read(&tty, &mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            buf.extend_from_slice(&chunk[..n]);
         }
         Some(decrqss_reply_supports_rgb(&buf))
     }
 
-    fn open_tty() -> Option<(Option<File>, RawFd)> {
+    fn open_tty() -> Option<OwnedFd> {
         if stdin().is_terminal() {
-            return Some((None, stdin().as_raw_fd()));
+            return stdin().as_fd().try_clone_to_owned().ok();
         }
-        let file = File::open("/dev/tty").ok()?;
-        let fd = file.as_raw_fd();
-        Some((Some(file), fd))
+        File::open("/dev/tty").ok().map(OwnedFd::from)
     }
 
-    fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
+    fn wait_readable(tty: &OwnedFd, timeout: Duration) -> bool {
+        let Ok(timeout) = Timespec::try_from(timeout) else {
+            return false;
         };
-        let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-        unsafe { libc::poll(&mut pfd, 1, ms) > 0 && pfd.revents & libc::POLLIN != 0 }
+        let mut fds = [PollFd::new(tty, PollFlags::IN)];
+        poll(&mut fds, Some(&timeout)).is_ok_and(|n| n > 0)
+            && fds[0].revents().contains(PollFlags::IN)
     }
 }
 

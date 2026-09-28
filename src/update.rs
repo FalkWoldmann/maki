@@ -1,10 +1,10 @@
-#[cfg(unix)]
-use std::ffi::CString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use maki_storage::version::{self, VersionError};
 use maki_storage::{StateDir, StorageError};
+#[cfg(unix)]
+use rustix::fs::{Access, access};
 
 const INSTALL_SCRIPT_URL: &str = "https://maki.sh/install.sh";
 const BACKUP_FILENAME: &str = "maki_backup";
@@ -108,10 +108,7 @@ fn needs_sudo(path: &Path) -> bool {
     let Some(dir) = path.parent() else {
         return false;
     };
-    let Ok(cpath) = CString::new(dir.as_os_str().as_encoded_bytes()) else {
-        return false;
-    };
-    unsafe { libc::access(cpath.as_ptr(), libc::W_OK) != 0 }
+    access(dir, Access::WRITE_OK).is_err()
 }
 
 #[cfg(not(unix))]

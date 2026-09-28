@@ -33,6 +33,8 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, Guard};
 use maki_config::ProjectConfig;
 use maki_providers::{ContentBlock, Message};
+#[cfg(unix)]
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
@@ -1283,8 +1285,8 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
 
 #[cfg(unix)]
 pub fn kill_process_groups(pids: &[u32]) {
-    for &pid in pids {
-        unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+    for pid in pids.iter().filter_map(|&pid| Pid::from_raw(pid as i32)) {
+        let _ = kill_process_group(pid, Signal::KILL);
     }
 }
 
