@@ -13,8 +13,15 @@ VARIANTS=(
   "reqwest-tokio|${TOKIO_SRC:?set TOKIO_SRC to a checkout of proto/tokio-full}"
 )
 
-echo "variant,round,kind,wall_s,cpu_s,units" > "$OUT"
 mkdir -p "$S/logs3"
+echo "variant,round,kind,wall_s,cpu_s,units" > "$OUT"
+
+# Builds run --offline, so downloads never end up in the timings.
+for v in "${VARIANTS[@]}"; do
+  IFS='|' read -r name src <<< "$v"
+  (cd "$src" && cargo +stable fetch) > "$S/logs3/$name-fetch.log" 2>&1 \
+    || { echo "cargo fetch failed for $name, see $S/logs3/$name-fetch.log" >&2; exit 1; }
+done
 
 run() {
   local name=$1 src=$2 round=$3 kind=$4; shift 4
