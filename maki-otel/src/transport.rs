@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use flate2::Compression as GzipLevel;
 use flate2::write::GzEncoder;
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{AsyncReadResponseExt, HttpClient, ResponseExt};
+use maki_http::config::{VersionNegotiation};
+use maki_http::{AsyncReadResponseExt, HttpClient};
 use thiserror::Error;
 
 use crate::encode::otlp::{LogsPayload, MetricsPayload};
@@ -53,7 +53,7 @@ pub enum ExportError {
     #[error("collector answered gRPC status {code}: {message}")]
     Grpc { code: i64, message: String },
     #[error("request failed: {0}")]
-    Request(#[from] isahc::Error),
+    Request(#[from] maki_http::Error),
     #[error("export did not finish within {0:?}")]
     Timeout(Duration),
 }
@@ -97,7 +97,7 @@ pub struct OtlpTransport {
 }
 
 impl OtlpTransport {
-    pub fn new(settings: SignalSettings) -> Result<Self, isahc::Error> {
+    pub fn new(settings: SignalSettings) -> Result<Self, maki_http::Error> {
         let mut builder = HttpClient::builder().timeout(settings.timeout);
         if settings.protocol == Protocol::Grpc {
             // Cleartext h2c needs prior knowledge; curl will not upgrade for us.
@@ -131,7 +131,7 @@ impl OtlpTransport {
         let grpc = self.settings.protocol == Protocol::Grpc;
         let gzip = self.settings.compression == Compression::Gzip;
 
-        let mut request = isahc::Request::post(&self.settings.url).header(
+        let mut request = maki_http::Request::post(&self.settings.url).header(
             HEADER_CONTENT_TYPE,
             match self.settings.protocol {
                 Protocol::Grpc => CONTENT_TYPE_GRPC,
@@ -157,7 +157,7 @@ impl OtlpTransport {
             request = request.header(key.as_str(), value.as_str());
         }
 
-        let request = request.body(body.to_vec()).map_err(isahc::Error::from)?;
+        let request = request.body(body.to_vec()).map_err(maki_http::Error::from)?;
         let mut response = self.client.send_async(request).await?;
 
         let status = response.status().as_u16();
@@ -175,8 +175,8 @@ impl OtlpTransport {
                 .and_then(|v| v.parse::<i64>().ok())
                 .or_else(|| {
                     response
-                        .trailer()
-                        .try_get()
+                        .body()
+                        .trailers()
                         .and_then(|t| t.get(HEADER_GRPC_STATUS))
                         .and_then(|v| v.to_str().ok())
                         .and_then(|v| v.parse::<i64>().ok())
@@ -232,7 +232,7 @@ impl Transport for OtlpTransport {
     }
 }
 
-fn header(response: &isahc::Response<isahc::AsyncBody>, name: &str) -> Option<String> {
+fn header(response: &maki_http::Response<maki_http::AsyncBody>, name: &str) -> Option<String> {
     response
         .headers()
         .get(name)

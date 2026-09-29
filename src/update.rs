@@ -16,7 +16,7 @@ pub enum UpdateError {
     Fetch {
         url: &'static str,
         #[source]
-        source: isahc::Error,
+        source: maki_http::Error,
     },
 
     #[error("failed to determine current binary path: {0}")]
@@ -56,8 +56,8 @@ pub enum UpdateError {
 }
 
 fn fetch_script() -> Result<String, UpdateError> {
-    use isahc::ReadResponseExt;
-    isahc::get(INSTALL_SCRIPT_URL)
+    use maki_http::ReadResponseExt;
+    maki_http::get(INSTALL_SCRIPT_URL)
         .and_then(|mut r| r.text().map_err(Into::into))
         .map_err(|source| UpdateError::Fetch {
             url: INSTALL_SCRIPT_URL,

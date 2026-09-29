@@ -1,7 +1,7 @@
 use futures_lite::AsyncReadExt;
 
-use isahc::HttpClient;
-use isahc::http::Request;
+use maki_http::HttpClient;
+use maki_http::http::Request;
 use maki_storage::auth::{OAuthTokens, now_millis};
 
 use super::OAuthError;

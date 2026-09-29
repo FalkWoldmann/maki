@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use flume::Sender;
 use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
-use isahc::{HttpClient, Request};
+use maki_http::{HttpClient, Request};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 

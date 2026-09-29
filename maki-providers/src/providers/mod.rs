@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use futures_lite::StreamExt;
 use futures_lite::io::AsyncBufRead;
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::http::request::Builder;
+use maki_http::config::{VersionNegotiation};
+use maki_http::http::request::Builder;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -370,8 +370,8 @@ pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
     result
 }
 
-pub(crate) fn http_client(timeouts: Timeouts) -> isahc::HttpClient {
-    isahc::HttpClient::builder()
+pub(crate) fn http_client(timeouts: Timeouts) -> maki_http::HttpClient {
+    maki_http::HttpClient::builder()
         .connect_timeout(timeouts.connect)
         .low_speed_timeout(LOW_SPEED_BYTES_PER_SEC, timeouts.low_speed)
         // The workspace enables curl's http2 feature for OTLP over gRPC, which

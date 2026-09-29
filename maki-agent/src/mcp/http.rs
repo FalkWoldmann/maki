@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use async_lock::Mutex;
 use futures_lite::AsyncReadExt;
-use isahc::HttpClient;
-use isahc::config::{CaCertificate, Configurable, RedirectPolicy, VersionNegotiation};
-use isahc::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use isahc::http::{Method, Request, StatusCode, header::HeaderMap};
+use maki_http::HttpClient;
+use maki_http::config::{CaCertificate, RedirectPolicy, VersionNegotiation};
+use maki_http::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use maki_http::http::{Method, Request, StatusCode, header::HeaderMap};
 use maki_storage::StateDir;
 use maki_storage::auth::load_mcp_auth;
 use serde_json::Value;

@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use isahc::ReadResponseExt;
-use isahc::config::{Configurable, RedirectPolicy, VersionNegotiation};
+use maki_http::ReadResponseExt;
+use maki_http::config::{RedirectPolicy, VersionNegotiation};
 use maki_storage::auth::now_millis;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -184,7 +184,7 @@ fn curated_fallback() -> Vec<CachedModel> {
 }
 
 fn fetch_catalog(access: &str) -> FetchOutcome {
-    let client = match isahc::HttpClient::builder()
+    let client = match maki_http::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(FETCH_TIMEOUT)
         .redirect_policy(RedirectPolicy::None)
@@ -196,7 +196,7 @@ fn fetch_catalog(access: &str) -> FetchOutcome {
         Err(_) => return FetchOutcome::Transient,
     };
 
-    let request = match isahc::Request::builder()
+    let request = match maki_http::Request::builder()
         .method("GET")
         .uri(CLI_MODELS_URL)
         .header("accept", "application/json")

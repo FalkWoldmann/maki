@@ -4,8 +4,8 @@ use std::str;
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
-use isahc::ReadResponseExt;
-use isahc::config::{Configurable, RedirectPolicy, VersionNegotiation};
+use maki_http::ReadResponseExt;
+use maki_http::config::{RedirectPolicy, VersionNegotiation};
 use maki_storage::StateDir;
 use maki_storage::auth::{OAuthTokens, delete_tokens, load_tokens, now_millis, save_tokens};
 use serde::Deserialize;
@@ -86,8 +86,8 @@ struct DeviceTokenError {
     interval: Option<u64>,
 }
 
-fn http_client(timeout: Duration) -> Result<isahc::HttpClient, AgentError> {
-    isahc::HttpClient::builder()
+fn http_client(timeout: Duration) -> Result<maki_http::HttpClient, AgentError> {
+    maki_http::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(timeout)
         .redirect_policy(RedirectPolicy::None)
@@ -116,7 +116,7 @@ fn post_form(url: &str, body: &str, timeout: Duration) -> Result<(u16, String), 
         });
     }
     let client = http_client(timeout)?;
-    let mut builder = isahc::Request::builder().method("POST").uri(url);
+    let mut builder = maki_http::Request::builder().method("POST").uri(url);
     for (key, value) in oauth_form_headers() {
         builder = builder.header(key, value);
     }

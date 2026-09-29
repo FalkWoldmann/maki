@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 maki-config = { workspace = true }
-isahc = { workspace = true }
+maki-http = { workspace = true }
 serde_json = { workspace = true }
 smol = { workspace = true }
 flume = { workspace = true }

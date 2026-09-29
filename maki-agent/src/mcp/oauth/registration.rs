@@ -1,7 +1,7 @@
 use futures_lite::AsyncReadExt;
 
-use isahc::HttpClient;
-use isahc::http::Request;
+use maki_http::HttpClient;
+use maki_http::http::Request;
 use serde_json::json;
 
 use super::OAuthError;

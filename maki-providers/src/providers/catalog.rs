@@ -15,8 +15,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use flume::Sender;
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::config::{VersionNegotiation};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_config::providers::{ProvidersConfig, builtin_provider};
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -688,7 +688,7 @@ fn parse_model(model: &schema::CatalogModel) -> CatalogMeta {
 }
 
 fn catalog_client() -> HttpClient {
-    isahc::HttpClient::builder()
+    maki_http::HttpClient::builder()
         .connect_timeout(Duration::from_secs(10))
         .low_speed_timeout(1, Duration::from_secs(30))
         // curl carries http2 for OTLP.

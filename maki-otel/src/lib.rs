@@ -54,7 +54,7 @@ pub enum InitError {
     #[error(transparent)]
     Settings(#[from] SettingsError),
     #[error("could not build the OTLP HTTP client: {0}")]
-    Client(#[from] isahc::Error),
+    Client(#[from] maki_http::Error),
 }
 
 struct Handle {
@@ -152,7 +152,7 @@ pub fn init_with_env<F: Fn(&str) -> Option<String>>(
 fn build_transports(
     kinds: &[Exporter],
     signal_settings: Option<&SignalSettings>,
-) -> Result<Vec<Box<dyn Transport>>, isahc::Error> {
+) -> Result<Vec<Box<dyn Transport>>, maki_http::Error> {
     let mut out: Vec<Box<dyn Transport>> = Vec::with_capacity(kinds.len());
     for kind in kinds {
         match kind {

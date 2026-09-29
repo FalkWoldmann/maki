@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use flume::Sender;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::SessionRef;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -374,7 +374,7 @@ impl Anthropic {
         self
     }
 
-    fn build_request(&self, method: &str, path: &str) -> isahc::http::request::Builder {
+    fn build_request(&self, method: &str, path: &str) -> maki_http::http::request::Builder {
         let auth = self.auth.lock().unwrap();
         let base = auth.base_url.as_deref().unwrap_or(API_ORIGIN);
         let url = format!("{}{path}", origin(base));
@@ -598,7 +598,7 @@ struct ModelsPage {
 }
 
 pub(crate) async fn parse_sse(
-    response: isahc::Response<isahc::AsyncBody>,
+    response: maki_http::Response<maki_http::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
@@ -775,9 +775,9 @@ mod tests {
         assert_eq!(origin(input), expected);
     }
 
-    fn mock_response(data: impl Into<Vec<u8>>) -> isahc::Response<isahc::AsyncBody> {
-        let body = isahc::AsyncBody::from(data.into());
-        isahc::Response::builder().status(200).body(body).unwrap()
+    fn mock_response(data: impl Into<Vec<u8>>) -> maki_http::Response<maki_http::AsyncBody> {
+        let body = maki_http::AsyncBody::from(data.into());
+        maki_http::Response::builder().status(200).body(body).unwrap()
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use flume::Sender;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::{MakiId, SessionRef};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -147,7 +147,7 @@ impl Google {
         }
     }
 
-    fn build_request(&self, method: &str, url: &str) -> isahc::http::request::Builder {
+    fn build_request(&self, method: &str, url: &str) -> maki_http::http::request::Builder {
         let auth = self.auth.lock().unwrap();
         auth.configure_request(
             Request::builder()
@@ -576,7 +576,7 @@ fn push_or_extend_thinking(
 }
 
 async fn parse_sse(
-    response: isahc::Response<isahc::AsyncBody>,
+    response: maki_http::Response<maki_http::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
@@ -1094,9 +1094,9 @@ mod tests {
         );
     }
 
-    fn mock_response(data: &'static [u8]) -> isahc::Response<isahc::AsyncBody> {
-        let body = isahc::AsyncBody::from_bytes_static(data);
-        isahc::Response::builder().status(200).body(body).unwrap()
+    fn mock_response(data: &'static [u8]) -> maki_http::Response<maki_http::AsyncBody> {
+        let body = maki_http::AsyncBody::from_bytes_static(data);
+        maki_http::Response::builder().status(200).body(body).unwrap()
     }
 
     #[test]

@@ -1,0 +1,19 @@
+[package]
+name = "maki-http"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+bytes = { workspace = true }
+futures-lite = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = ["ring"]
+ring = ["rustls/ring"]
+aws-lc = ["rustls/aws-lc-rs", "reqwest/rustls"]

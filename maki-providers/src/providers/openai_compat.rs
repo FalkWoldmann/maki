@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use flume::Sender;
 use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::MakiId;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
@@ -173,7 +173,7 @@ impl OpenAiCompatProvider {
         method: &str,
         path: &str,
         auth: &ResolvedAuth,
-    ) -> isahc::http::request::Builder {
+    ) -> maki_http::http::request::Builder {
         let base = self.base_url(auth);
         auth.configure_request(
             Request::builder()
