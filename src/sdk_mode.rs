@@ -565,7 +565,7 @@ pub fn run(params: SdkParams) -> Result<()> {
     let working_dir = cwd.to_string_lossy().into_owned();
 
     let (mcp_handle, mcp_config_errors) =
-        smol::block_on(mcp::start_connected(&cwd, project_config.clone()));
+        maki_rt::block_on(mcp::start_connected(&cwd, project_config.clone()));
     if !mcp_config_errors.is_empty() {
         eprintln!("MCP config error: {mcp_config_errors}");
     }
@@ -758,7 +758,7 @@ pub fn run(params: SdkParams) -> Result<()> {
         ..
     } = handle;
     drop(input_tx);
-    smol::block_on(async {
+    maki_rt::block_on(async {
         // Unbounded: the pump ends at the stream marker, which the session
         // emits once it has answered every prompt stdin queued.
         pump.await;
@@ -944,8 +944,8 @@ struct EventPump {
 }
 
 impl EventPump {
-    fn spawn(mut self, mut events: SessionEvents) -> smol::Task<()> {
-        smol::spawn(async move {
+    fn spawn(mut self, mut events: SessionEvents) -> maki_rt::Task<()> {
+        maki_rt::spawn(async move {
             while let Some(envelope) = events.next().await {
                 // Folded in first, so a plugin handling `TurnEnd` finds the
                 // finished totals when it calls `maki.session.read()`.
@@ -1672,7 +1672,7 @@ mod tests {
             })
             .unwrap();
         drop(guard);
-        smol::block_on(pump);
+        maki_rt::block_on(pump);
 
         let line = out_rx.try_recv().expect(PUMP_FORWARDED);
         assert!(line.contains(PUMP_ERROR), "got: {line}");

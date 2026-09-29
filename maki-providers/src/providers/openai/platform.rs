@@ -332,7 +332,7 @@ impl OpenAi {
             message: "OAuth refresh not available for externally-managed auth".into(),
         })?;
         let rejected = self.auth.lock().unwrap().access_token().map(str::to_owned);
-        let resolved = smol::unblock(move || {
+        let resolved = maki_rt::unblock(move || {
             match refreshed_tokens(
                 &storage,
                 auth::PROVIDER,
@@ -598,7 +598,7 @@ impl Provider for OpenAi {
             let Some(storage) = self.storage.clone() else {
                 return Ok(());
             };
-            let resolved = smol::unblock(move || auth::resolve(&storage)).await?;
+            let resolved = maki_rt::unblock(move || auth::resolve(&storage)).await?;
             *self.auth.lock().unwrap() = resolved;
             debug!("reloaded OpenAI auth from storage");
             Ok(())

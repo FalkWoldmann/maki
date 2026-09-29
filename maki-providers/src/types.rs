@@ -1199,7 +1199,7 @@ mod tests {
             content,
             ..Default::default()
         }];
-        smol::block_on(adapt_images_for_model(model, &messages))[0]
+        maki_rt::block_on(adapt_images_for_model(model, &messages))[0]
             .content
             .clone()
     }
@@ -1220,7 +1220,7 @@ mod tests {
             ..Default::default()
         }];
         assert!(matches!(
-            smol::block_on(adapt_images_for_model(&model, &with_image)),
+            maki_rt::block_on(adapt_images_for_model(&model, &with_image)),
             Cow::Borrowed(_)
         ));
 
@@ -1228,7 +1228,7 @@ mod tests {
         text_only_model.supports_vision_override = Some(false);
         let no_images = vec![Message::user("hi".into())];
         assert!(matches!(
-            smol::block_on(adapt_images_for_model(&text_only_model, &no_images)),
+            maki_rt::block_on(adapt_images_for_model(&text_only_model, &no_images)),
             Cow::Borrowed(_)
         ));
     }
@@ -1268,7 +1268,7 @@ mod tests {
             ]),
         ];
 
-        let adapted = smol::block_on(adapt_images_for_model(&model, &history));
+        let adapted = maki_rt::block_on(adapt_images_for_model(&model, &history));
         assert!(matches!(adapted, Cow::Owned(_)), "the repair needs a copy");
         assert_eq!(adapted[0].first_user_text(), Some(CAPTION));
         let ContentBlock::Image { source } = &adapted[1].content[0] else {

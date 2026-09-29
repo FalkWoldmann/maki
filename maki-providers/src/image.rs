@@ -229,7 +229,7 @@ pub(crate) async fn fix_for_wire(source: &ImageSource) -> Fix {
     }
     let declared = source.media_type;
     let data = Arc::clone(&source.data);
-    let fix = smol::unblock(move || decide(data, declared))
+    let fix = maki_rt::unblock(move || decide(data, declared))
         .await
         .unwrap_or_else(|error| {
             warn!(
@@ -301,7 +301,7 @@ mod tests {
     }
 
     fn rewrite(source: &ImageSource) -> ImageSource {
-        let Fix::Replace(fixed) = smol::block_on(fix_for_wire(source)) else {
+        let Fix::Replace(fixed) = maki_rt::block_on(fix_for_wire(source)) else {
             panic!("expected a rewrite");
         };
         fixed
@@ -328,7 +328,10 @@ mod tests {
     #[test]
     fn images_within_the_limits_are_left_alone() {
         let source = png(MAX_EDGE, 10);
-        assert!(matches!(smol::block_on(fix_for_wire(&source)), Fix::Keep));
+        assert!(matches!(
+            maki_rt::block_on(fix_for_wire(&source)),
+            Fix::Keep
+        ));
     }
 
     /// Extensions lie (a JPEG saved as `.png`), and ACP hands us whatever mime
@@ -349,7 +352,10 @@ mod tests {
     #[test_case(NOT_TEXT ; "not_even_text")]
     fn undecodable_payloads_are_dropped(data: &str) {
         let source = ImageSource::new(ImageMediaType::Png, Arc::from(data));
-        assert!(matches!(smol::block_on(fix_for_wire(&source)), Fix::Drop));
+        assert!(matches!(
+            maki_rt::block_on(fix_for_wire(&source)),
+            Fix::Drop
+        ));
     }
 
     /// Every request walks the whole history, and the copy it carries is a

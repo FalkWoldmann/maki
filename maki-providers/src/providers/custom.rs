@@ -337,7 +337,7 @@ pub fn discover_models(timeouts: Timeouts) -> Vec<String> {
         match create(slug, timeouts) {
             Ok(provider) => {
                 let slug_c = slug.clone();
-                let result = smol::block_on(provider.list_models());
+                let result = maki_rt::block_on(provider.list_models());
                 match result {
                     Ok(mut models) => {
                         overlay_declared_tiers(def, &mut models);

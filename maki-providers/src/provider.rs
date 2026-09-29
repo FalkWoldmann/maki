@@ -156,7 +156,7 @@ pub async fn from_model_async(
 ) -> Result<Box<dyn Provider>, AgentError> {
     let slug = Arc::clone(&model.provider);
     let id = model.id.clone();
-    let provider = smol::unblock(move || provider_for_slug(&slug, timeouts)).await?;
+    let provider = maki_rt::unblock(move || provider_for_slug(&slug, timeouts)).await?;
     provider.adjust_model(model);
     debug!(provider = %model.provider, model = %id, "provider created");
     Ok(provider)
@@ -224,13 +224,13 @@ pub async fn fetch_all_models(
 
     for spec in ProviderRegistry::builtins() {
         let slug = spec.slug;
-        let Ok(provider) = smol::unblock(move || provider_for_slug(slug, timeouts)).await else {
+        let Ok(provider) = maki_rt::unblock(move || provider_for_slug(slug, timeouts)).await else {
             warn!(provider = slug, "failed to create provider, skipping");
             continue;
         };
         let display_name = spec.display_name;
         let tx = tx.clone();
-        smol::spawn(async move {
+        maki_rt::spawn(async move {
             let batch = match provider.list_models().await {
                 Ok(models) => {
                     let mut specs: Vec<String> =
@@ -273,7 +273,7 @@ pub async fn fetch_all_models(
     for slug in dynamic::discovered_slugs() {
         let tx = tx.clone();
         let slug = slug.to_string();
-        smol::spawn(async move {
+        maki_rt::spawn(async move {
             let static_fallback = |reason: String| {
                 warn!(
                     slug,
@@ -301,8 +301,8 @@ pub async fn fetch_all_models(
     }
 
     let tx_catalog = tx.clone();
-    smol::spawn(async move {
-        let catalog = smol::unblock(catalog_providers).await;
+    maki_rt::spawn(async move {
+        let catalog = maki_rt::unblock(catalog_providers).await;
         for cat in catalog {
             // No `Owner::Custom` here, unlike `available_model_specs` above:
             // a long-standing asymmetry, changing it is a behaviour change.
@@ -327,7 +327,7 @@ pub async fn fetch_all_models(
     .detach();
 
     let tx_custom = tx.clone();
-    smol::spawn(async move {
+    maki_rt::spawn(async move {
         let declared = custom::declared_model_specs();
         if !declared.is_empty() {
             let _ = tx_custom
@@ -337,7 +337,7 @@ pub async fn fetch_all_models(
                 })
                 .await;
         }
-        let custom_specs = smol::unblock(move || custom::discover_models(timeouts)).await;
+        let custom_specs = maki_rt::unblock(move || custom::discover_models(timeouts)).await;
         if !custom_specs.is_empty() {
             let _ = tx_custom
                 .send_async(ModelBatch {

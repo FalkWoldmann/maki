@@ -6,10 +6,10 @@ use std::backtrace::Backtrace;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
-use futures_lite::FutureExt;
+use futures::FutureExt;
 
 pub(crate) struct TaskSet<T> {
-    tasks: Vec<smol::Task<Result<T, String>>>,
+    tasks: Vec<maki_rt::Task<Result<T, String>>>,
 }
 
 impl<T: Send + 'static> TaskSet<T> {
@@ -21,7 +21,7 @@ impl<T: Send + 'static> TaskSet<T> {
     where
         F: Future<Output = T> + Send + 'static,
     {
-        self.tasks.push(smol::spawn(async move {
+        self.tasks.push(maki_rt::spawn(async move {
             AssertUnwindSafe(future)
                 .catch_unwind()
                 .await
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn mixed_panic_and_ok() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut set: TaskSet<i32> = TaskSet::new();
             set.spawn(async { 42 });
             set.spawn(async { panic!("oops") });

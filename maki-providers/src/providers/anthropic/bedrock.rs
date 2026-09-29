@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use flume::Sender;
 use hmac::{Hmac, Mac};
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{HttpClient, ReadResponseExt, Request};
+use maki_http::config::VersionNegotiation;
+use maki_http::{HttpClient, ReadResponseExt, Request};
 use maki_storage::id::SessionRef;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -637,7 +637,7 @@ impl Provider for Bedrock {
             loop {
                 let body = response.body_mut();
                 let n = {
-                    use futures_lite::io::AsyncReadExt;
+                    use tokio::io::AsyncReadExt;
                     body.read(&mut read_buf).await?
                 };
                 if n == 0 {
@@ -963,7 +963,7 @@ aws_session_token = MYTOKEN\n";
 
     #[test]
     fn event_parser_text_stream() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (tx, rx) = flume::unbounded();
             let mut parser = shared::EventParser::new();
 

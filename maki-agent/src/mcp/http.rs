@@ -4,15 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use async_lock::Mutex;
-use futures_lite::AsyncReadExt;
-use isahc::HttpClient;
-use isahc::config::{CaCertificate, Configurable, RedirectPolicy, VersionNegotiation};
-use isahc::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use isahc::http::{Method, Request, StatusCode, header::HeaderMap};
+use maki_http::HttpClient;
+use maki_http::config::{CaCertificate, RedirectPolicy, VersionNegotiation};
+use maki_http::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use maki_http::http::{Method, Request, StatusCode, header::HeaderMap};
 use maki_storage::StateDir;
 use maki_storage::auth::load_mcp_auth;
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 
 use super::error::McpError;
 use super::oauth;
@@ -453,7 +453,7 @@ fn parse_sse_events(body: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::future::race;
+    use maki_rt::race;
     use serde_json::json;
     use test_case::test_case;
 
@@ -511,8 +511,8 @@ mod tests {
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-        let (ready_tx, ready_rx) = smol::channel::bounded(1);
-        let (respond_tx, respond_rx) = smol::channel::bounded(1);
+        let (ready_tx, ready_rx) = flume::bounded(1);
+        let (respond_tx, respond_rx) = flume::bounded(1);
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_read_timeout(Some(DISCONNECT_DEADLINE)).unwrap();
@@ -534,7 +534,7 @@ mod tests {
                 stream.write_all(PARTIAL_RESPONSE.as_bytes()).unwrap();
             }
             ready_tx.try_send(()).unwrap();
-            respond_rx.recv_blocking().unwrap();
+            respond_rx.recv().unwrap();
 
             // isahc observes dropped requests when the transfer next makes progress.
             let response = if started_body { " " } else { PARTIAL_RESPONSE };
@@ -556,7 +556,7 @@ mod tests {
             None,
         )
         .unwrap();
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let pending: BoxFuture<'_, ()> = match operation {
                 PendingOperation::Request => Box::pin(async {
                     let _ = transport.send_request("tools/call", None).await;
@@ -573,7 +573,7 @@ mod tests {
                     false
                 },
                 async {
-                    ready_rx.recv().await.unwrap();
+                    ready_rx.recv_async().await.unwrap();
                     true
                 },
             )
@@ -860,9 +860,9 @@ mod tests {
         });
 
         let transport = transport_with(&format!("{base}/mcp"), HashMap::new(), None);
-        smol::block_on(transport.send_request("initialize", None)).unwrap();
+        maki_rt::block_on(transport.send_request("initialize", None)).unwrap();
 
-        let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
+        let result = maki_rt::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
     }
 
@@ -888,7 +888,7 @@ mod tests {
         save_mcp_auth(&storage, "srv", &stored_auth(&url, "old-token", "r1")).unwrap();
 
         let transport = transport_with(&url, HashMap::new(), Some(storage.clone()));
-        let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
+        let result = maki_rt::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
 
         let saved = load_mcp_auth(&storage, "srv", &url).unwrap();
@@ -909,7 +909,7 @@ mod tests {
         });
 
         let transport = transport_with(&format!("{base}/mcp"), HashMap::new(), None);
-        let err = smol::block_on(transport.send_request("tools/list", None)).unwrap_err();
+        let err = maki_rt::block_on(transport.send_request("tools/list", None)).unwrap_err();
         assert!(matches!(err, McpError::HttpError { status: 401, .. }));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
@@ -928,7 +928,7 @@ mod tests {
 
         let headers = HashMap::from([("Authorization".to_string(), OLD_BEARER.to_string())]);
         let transport = transport_with(&format!("{base}/mcp"), headers, None);
-        let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
+        let result = maki_rt::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
     }
 
@@ -950,7 +950,7 @@ mod tests {
         save_mcp_auth(&storage, "srv", &stored_auth(&url, "old-token", "r1")).unwrap();
 
         let transport = transport_with(&url, HashMap::new(), Some(storage));
-        let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
+        let result = maki_rt::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
     }
 }

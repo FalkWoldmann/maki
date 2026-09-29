@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_lock::Mutex;
 use maki_config::{ModelPolicy, ProjectConfig, SessionDefaults};
 use maki_providers::Timeouts;
 use maki_providers::model::Model;
@@ -12,6 +11,7 @@ use maki_storage::StateDir;
 use maki_storage::id::SessionRef;
 use maki_storage::sessions::SessionClaim;
 use serde_json::Value;
+use tokio::sync::Mutex;
 use tracing::error;
 
 use crate::agent;
@@ -81,7 +81,7 @@ pub struct HeadlessHandle {
     pub tool_names: Vec<String>,
     pub session_id: SessionRef,
     pub cwd: String,
-    pub task: smol::Task<()>,
+    pub task: maki_rt::Task<()>,
 }
 
 struct AgentSetup {
@@ -166,7 +166,7 @@ pub fn spawn(params: HeadlessParams) -> (HeadlessHandle, SessionEvents) {
     let defaults = params.defaults;
     let working_dir_path = params.initial_wd.clone();
     let task_working_dir = working_dir.clone();
-    let task = smol::spawn(run_session(guard, params.mcp_handle.clone(), async move {
+    let task = maki_rt::spawn(run_session(guard, params.mcp_handle.clone(), async move {
         let mut model = params.model;
         let Some(provider) = connect(&mut model, params.timeouts, &event_tx).await else {
             return;
@@ -276,7 +276,7 @@ pub struct InteractiveHandle {
     pub model_tx: flume::Sender<Model>,
     pub session_id: SessionRef,
     pub permissions: Arc<PermissionManager>,
-    pub task: smol::Task<()>,
+    pub task: maki_rt::Task<()>,
 }
 
 pub fn spawn_interactive(params: InteractiveParams) -> (InteractiveHandle, SessionEvents) {
@@ -323,7 +323,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> (InteractiveHandle, Sessi
 
     let session_ref_clone = session_ref.clone();
     let task_permissions = Arc::clone(&permissions);
-    let task = smol::spawn(run_session(guard, params.mcp_handle.clone(), async move {
+    let task = maki_rt::spawn(run_session(guard, params.mcp_handle.clone(), async move {
         let mut model = params.model;
         let Some(mut provider) = connect(&mut model, params.timeouts, &base_tx).await else {
             return;
@@ -334,7 +334,7 @@ pub fn spawn_interactive(params: InteractiveParams) -> (InteractiveHandle, Sessi
 
         while let Ok(input) = input_rx.recv_async().await {
             let (trigger, cancel) = CancelToken::new();
-            let cancel_task = smol::spawn({
+            let cancel_task = maki_rt::spawn({
                 let cancel_rx = cancel_rx.clone();
                 async move {
                     if cancel_rx.recv_async().await.is_ok() {
@@ -456,9 +456,9 @@ pub fn spawn_interactive(params: InteractiveParams) -> (InteractiveHandle, Sessi
 /// Waits for a session task that has nothing left to do but tear MCP down,
 /// dropping it if that wedges. Safe to bound: the event stream already ended
 /// (see [`run_session`]), and dropping the task cannot resurrect it.
-pub async fn await_shutdown(task: smol::Task<()>) {
-    futures_lite::future::or(task, async {
-        smol::Timer::after(SESSION_SHUTDOWN_TIMEOUT).await;
+pub async fn await_shutdown(task: maki_rt::Task<()>) {
+    maki_rt::or(task, async {
+        tokio::time::sleep(SESSION_SHUTDOWN_TIMEOUT).await;
     })
     .await;
 }
@@ -494,7 +494,7 @@ mod tests {
     use std::pin::pin;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use futures_lite::future::poll_once;
+    use futures::FutureExt;
 
     use super::*;
     use crate::mcp::McpCommand;
@@ -544,7 +544,7 @@ mod tests {
         let retained = guard.sender(RUN_ID);
         let event_tx = retained.clone();
         let (cmd_tx, cmd_rx) = flume::unbounded();
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut session = pin!(run_session(
                 guard,
                 Some(McpHandle::for_test(cmd_tx)),
@@ -555,7 +555,7 @@ mod tests {
                 }
             ));
             assert!(
-                poll_once(session.as_mut()).await.is_none(),
+                session.as_mut().now_or_never().is_none(),
                 "{SHUTDOWN_WEDGED}"
             );
             assert!(
@@ -568,7 +568,7 @@ mod tests {
                 AgentEvent::Error { message } if message == PROVIDER_ERROR
             ));
             assert!(
-                matches!(poll_once(events.next()).await, Some(None)),
+                matches!(events.next().now_or_never(), Some(None)),
                 "{STREAM_ENDED}"
             );
         });
@@ -582,7 +582,7 @@ mod tests {
     fn await_shutdown_waits_for_a_task_that_still_works() {
         let (release_tx, release_rx) = flume::bounded::<()>(1);
         let finished = Arc::new(AtomicBool::new(false));
-        let task = smol::spawn({
+        let task = maki_rt::spawn({
             let finished = Arc::clone(&finished);
             async move {
                 let _ = release_rx.recv_async().await;
@@ -590,10 +590,10 @@ mod tests {
             }
         });
 
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut shutdown = pin!(await_shutdown(task));
             assert!(
-                poll_once(shutdown.as_mut()).await.is_none(),
+                shutdown.as_mut().now_or_never().is_none(),
                 "{STILL_WORKING}"
             );
             release_tx.send(()).unwrap();

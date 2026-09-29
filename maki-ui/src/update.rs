@@ -11,7 +11,7 @@ pub fn latest_version() -> Option<&'static str> {
 }
 
 pub fn spawn_check() {
-    smol::spawn(async {
+    maki_rt::spawn(async {
         match version::fetch_latest_async().await {
             Ok(v) if is_newer(&v, CURRENT) => {
                 let _ = LATEST.set(v);

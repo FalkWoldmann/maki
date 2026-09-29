@@ -1,5 +1,5 @@
-use futures_lite::AsyncWriteExt;
-use smol::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 const PREFERRED_PORT: u16 = 19876;
 const MAX_HEADER_SIZE: usize = 8192;
@@ -67,7 +67,8 @@ impl CallbackServer {
             let mut buf = Vec::with_capacity(1024);
             let mut tmp = [0u8; 1024];
             loop {
-                let n = futures_lite::AsyncReadExt::read(&mut stream, &mut tmp)
+                let n = stream
+                    .read(&mut tmp)
                     .await
                     .map_err(|e| format!("read failed: {e}"))?;
                 if n == 0 {
@@ -164,11 +165,7 @@ fn hex_val(b: u8) -> u8 {
     }
 }
 
-async fn respond(
-    stream: &mut smol::net::TcpStream,
-    status: u16,
-    body: &str,
-) -> Result<(), std::io::Error> {
+async fn respond(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), std::io::Error> {
     let status_text = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -204,13 +201,14 @@ mod tests {
 
     #[test]
     fn callback_receives_code() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = CallbackServer::bind(None, None, None).await.unwrap();
             let port = server.port;
 
-            let handle = smol::spawn(async move { server.wait_for_callback("test-state").await });
+            let handle =
+                maki_rt::spawn(async move { server.wait_for_callback("test-state").await });
 
-            let mut stream = smol::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
                 .await
                 .unwrap();
             let req = format!(
@@ -225,15 +223,16 @@ mod tests {
 
     #[test]
     fn callback_receives_code_on_custom_path() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = CallbackServer::bind(None, Some("/callback"), None)
                 .await
                 .unwrap();
             let port = server.port;
 
-            let handle = smol::spawn(async move { server.wait_for_callback("test-state").await });
+            let handle =
+                maki_rt::spawn(async move { server.wait_for_callback("test-state").await });
 
-            let mut stream = smol::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
                 .await
                 .unwrap();
             let req =
@@ -247,10 +246,8 @@ mod tests {
 
     #[test]
     fn bind_pins_requested_port() {
-        smol::block_on(async {
-            let probe = smol::net::TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .unwrap();
+        maki_rt::block_on(async {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let port = probe.local_addr().unwrap().port();
             drop(probe);
 
@@ -267,7 +264,7 @@ mod tests {
 
     #[test]
     fn bind_advertises_custom_hostname() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = CallbackServer::bind(None, None, Some("localhost"))
                 .await
                 .unwrap();
@@ -280,7 +277,7 @@ mod tests {
 
     #[test]
     fn bind_defaults_to_stock_path() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = CallbackServer::bind(None, None, None).await.unwrap();
             assert_eq!(
                 server.redirect_uri(),
@@ -291,10 +288,8 @@ mod tests {
 
     #[test]
     fn bind_pinned_port_in_use_is_error() {
-        smol::block_on(async {
-            let listener = smol::net::TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .unwrap();
+        maki_rt::block_on(async {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             let port = listener.local_addr().unwrap().port();
 
             let err = CallbackServer::bind(Some(port), None, None)

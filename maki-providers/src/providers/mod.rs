@@ -3,12 +3,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use futures_lite::StreamExt;
-use futures_lite::io::AsyncBufRead;
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::http::request::Builder;
+use maki_http::config::VersionNegotiation;
+use maki_http::http::request::Builder;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::io::{AsyncBufRead, Lines};
 use tracing::{debug, warn};
 
 use maki_storage::StateDir;
@@ -349,29 +348,24 @@ impl SseErrorPayload {
 }
 
 pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
-    lines: &mut futures_lite::io::Lines<R>,
+    lines: &mut Lines<R>,
     deadline: &mut Instant,
     stream_timeout: Duration,
 ) -> Result<Option<String>, AgentError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let result = futures_lite::future::or(
-        async { lines.next().await.transpose().map_err(AgentError::from) },
-        async {
-            smol::Timer::after(remaining).await;
-            Err(AgentError::Timeout {
-                secs: stream_timeout.as_secs(),
-            })
-        },
-    )
-    .await;
-    if let Ok(Some(_)) = &result {
+    let line = tokio::time::timeout(remaining, lines.next_line())
+        .await
+        .map_err(|_| AgentError::Timeout {
+            secs: stream_timeout.as_secs(),
+        })??;
+    if line.is_some() {
         *deadline = Instant::now() + stream_timeout;
     }
-    result
+    Ok(line)
 }
 
-pub(crate) fn http_client(timeouts: Timeouts) -> isahc::HttpClient {
-    isahc::HttpClient::builder()
+pub(crate) fn http_client(timeouts: Timeouts) -> maki_http::HttpClient {
+    maki_http::HttpClient::builder()
         .connect_timeout(timeouts.connect)
         .low_speed_timeout(LOW_SPEED_BYTES_PER_SEC, timeouts.low_speed)
         // The workspace enables curl's http2 feature for OTLP over gRPC, which
@@ -531,8 +525,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use futures_lite::io::AsyncBufReadExt;
     use test_case::test_case;
+    use tokio::io::{AsyncBufReadExt, ReadBuf};
 
     const ERROR_MESSAGE: &str = "Our servers are currently overloaded. Please try again later.";
     const PARSE_FAILED: &str = "SSE error payload should deserialize";
@@ -645,17 +639,17 @@ mod tests {
 
     struct NeverReader;
 
-    impl futures_lite::io::AsyncRead for NeverReader {
+    impl tokio::io::AsyncRead for NeverReader {
         fn poll_read(
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
-            _buf: &mut [u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
+            _buf: &mut ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
             std::task::Poll::Pending
         }
     }
 
-    impl futures_lite::io::AsyncBufRead for NeverReader {
+    impl tokio::io::AsyncBufRead for NeverReader {
         fn poll_fill_buf(
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
@@ -668,7 +662,7 @@ mod tests {
 
     #[test]
     fn next_sse_line_expired_deadline_returns_timeout() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut lines = NeverReader.lines();
             let mut past = Instant::now() - Duration::from_secs(1);
             let stream_timeout = Duration::from_secs(300);

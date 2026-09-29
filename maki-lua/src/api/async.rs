@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_lock::{Semaphore, SemaphoreGuardArc};
 use futures::future::join_all;
 use maki_agent::cancel::CancelToken;
 use maki_lua_macro::{lua_class, lua_fn, lua_table};
 use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::docs::{FnDoc, ParamDoc};
 use crate::runtime::{TaskHandle, enqueue_async_task, lock_cell, register_cancel_hook};
@@ -19,7 +19,7 @@ struct LuaSemaphore {
 }
 
 struct LuaPermit {
-    guard: std::sync::Mutex<Option<SemaphoreGuardArc>>,
+    guard: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
 }
 
 /// Wait for a permit from the semaphore. Your coroutine suspends until a slot
@@ -40,9 +40,10 @@ async fn acquire(lua: Lua, this: mlua::UserDataRef<LuaSemaphore>) -> LuaResult<L
         .map(|h| lock_cell(&h).cancel.clone())
         .unwrap_or_else(CancelToken::none);
     let guard = cancel
-        .race(sem.acquire_arc())
+        .race(sem.acquire_owned())
         .await
-        .map_err(mlua::Error::runtime)?;
+        .map_err(mlua::Error::runtime)?
+        .expect("the semaphore is never closed");
     Ok(LuaPermit {
         guard: std::sync::Mutex::new(Some(guard)),
     })
@@ -212,7 +213,7 @@ async fn gather(lua: Lua, fns: Table) -> LuaResult<Table> {
 /// end)
 #[lua_fn]
 async fn sleep(_lua: Lua, ms: u64) -> LuaResult<()> {
-    smol::Timer::after(Duration::from_millis(ms)).await;
+    tokio::time::sleep(Duration::from_millis(ms)).await;
     Ok(())
 }
 
@@ -428,8 +429,9 @@ mod tests {
     use std::pin::pin;
     use std::sync::Mutex;
 
-    use futures_lite::future::{or, poll_once};
+    use futures::FutureExt;
     use maki_agent::cancel::CancelTrigger;
+    use maki_rt::or;
     use mlua::Lua;
     use test_case::test_case;
 
@@ -453,7 +455,7 @@ mod tests {
     #[test_case(r#"return async_tbl.await(nil, function() end)"#, ERR_ARGC_INTEGER ; "argc_non_integer")]
     #[test_case(r#"return async_tbl.await(1, 42)"#, ERR_SECOND_ARG_FN ; "second_arg_not_fn")]
     fn await_validation(code: &str, expected_err: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             let err = lua.load(code).eval_async::<Value>().await.unwrap_err();
             let msg = err.to_string();
@@ -467,7 +469,7 @@ mod tests {
     #[test_case(1, &[], 0 ; "no_extra_args")]
     #[test_case(3, &["a", "b"], 2 ; "with_extra_args")]
     fn await_callback_insertion_position(argc: usize, extra: &[&str], expected_pos: usize) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
 
             let extra_str = extra
@@ -506,7 +508,7 @@ mod tests {
 
     #[test]
     fn await_returns_multivalue_from_callback() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             let code = r#"
                 local function producer(cb)
@@ -525,7 +527,7 @@ mod tests {
 
     #[test]
     fn wrap_creates_callable_wrapper() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             let code = r#"
                 local function async_add(a, b, cb)
@@ -541,7 +543,7 @@ mod tests {
 
     #[test]
     fn gather_preserves_input_order_and_values() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             let code = r#"
                 local r = async_tbl.gather({
@@ -574,7 +576,7 @@ mod tests {
 
     #[test]
     fn gather_rejects_non_function_entries() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             let msg = lua
                 .load(r#"return async_tbl.gather({ function() end, 42 })"#)
@@ -588,7 +590,7 @@ mod tests {
 
     #[test]
     fn gather_runs_children_concurrently() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             // child 1 parks on a held semaphore; child 2 releases it.
             // Sequential execution would deadlock here.
@@ -623,7 +625,7 @@ mod tests {
 
     #[test]
     fn gather_children_see_caller_cancel() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             lua.load("sem = async_tbl.semaphore(1); held = sem:acquire()")
                 .exec_async()
@@ -661,7 +663,7 @@ mod tests {
     #[test_case(0 ; "zero_clamps_to_capacity_one")]
     #[test_case(1 ; "capacity_one")]
     fn semaphore_acquire_blocks_at_capacity_until_release(n: usize) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             lua.load(format!(
                 "sem = async_tbl.semaphore({n}); p1 = sem:acquire()"
@@ -671,7 +673,7 @@ mod tests {
             .unwrap();
             let mut second = pin!(lua.load("p2 = sem:acquire()").exec_async());
             assert!(
-                poll_once(second.as_mut()).await.is_none(),
+                second.as_mut().now_or_never().is_none(),
                 "second acquire must block while first permit is held"
             );
             lua.load("p1:release()").exec().unwrap();
@@ -682,7 +684,7 @@ mod tests {
 
     #[test]
     fn semaphore_double_release_errors() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             lua.load("local sem = async_tbl.semaphore(1); p = sem:acquire(); p:release()")
                 .exec_async()
@@ -698,7 +700,7 @@ mod tests {
 
     #[test]
     fn semaphore_gc_of_permit_releases_slot() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             lua.load("sem = async_tbl.semaphore(1); do local p = sem:acquire() end")
                 .exec_async()
@@ -707,7 +709,7 @@ mod tests {
             lua.gc_collect().unwrap();
             lua.gc_collect().unwrap();
             let reacquire = pin!(lua.load("return sem:acquire() ~= nil").eval_async::<bool>());
-            match poll_once(reacquire).await {
+            match reacquire.now_or_never() {
                 Some(result) => assert!(result.unwrap()),
                 None => panic!("acquire must complete immediately after permit was gc'd"),
             }
@@ -716,7 +718,7 @@ mod tests {
 
     #[test]
     fn semaphore_acquire_errors_when_task_cancelled() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (lua, _tbl) = setup();
             lua.load("sem = async_tbl.semaphore(1); held = sem:acquire()")
                 .exec_async()

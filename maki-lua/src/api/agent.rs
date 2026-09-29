@@ -6,7 +6,6 @@ use std::pin::pin;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use async_lock::Mutex as AsyncMutex;
 use futures::future::{Either, select};
 use maki_agent::agent::{LoadedInstructions, tool_dispatch};
 use maki_agent::cancel::{CancelMap, CancelSlot};
@@ -33,6 +32,7 @@ use maki_storage::id::MakiId;
 use maki_storage::sessions::StoredThinking;
 use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as LuaValue};
 use serde_json::Value as JsonValue;
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::info;
 
 use crate::api::tool::{audiences_to_lua, parse_audience};
@@ -196,7 +196,7 @@ async fn system_prompt(
     let instructions = match instructions_val {
         LuaValue::Boolean(true) => {
             let cwd = vars.apply("{cwd}").into_owned();
-            smol::unblock(move || maki_agent::agent::load_instruction_text(&cwd)).await
+            maki_rt::unblock(move || maki_agent::agent::load_instruction_text(&cwd)).await
         }
         LuaValue::Boolean(false) | LuaValue::Nil => String::new(),
         LuaValue::String(s) => s.to_str()?.to_owned(),
@@ -572,7 +572,7 @@ async fn session(
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
     let (usage_tx, usage_rx) = flume::unbounded();
 
-    smol::spawn(relay_session_events(
+    maki_rt::spawn(relay_session_events(
         sub_events,
         parent_tx.clone(),
         Arc::clone(&subagent_info),
@@ -819,12 +819,12 @@ struct LuaSession {
 impl Drop for LuaSession {
     fn drop(&mut self) {
         match self.inner.try_lock() {
-            Some(mut s) => s.close(),
+            Ok(mut s) => s.close(),
             // Prompt still in flight: close asynchronously so history
             // and cancel entry are never silently leaked.
-            None => {
+            Err(_) => {
                 let inner = Arc::clone(&self.inner);
-                smol::spawn(async move { inner.lock().await.close() }).detach();
+                maki_rt::spawn(async move { inner.lock().await.close() }).detach();
             }
         }
     }
@@ -1124,7 +1124,7 @@ mod tests {
         }
         drop(guard);
 
-        smol::block_on(relay_session_events(
+        maki_rt::block_on(relay_session_events(
             sub_events,
             EventSender::new(parent_raw_tx, RUN_ID),
             subagent_info(),

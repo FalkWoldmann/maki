@@ -7,7 +7,7 @@
 
 use std::{io, time::Duration};
 
-use isahc::{AsyncReadResponseExt, error::ErrorKind as HttpErrorKind};
+use maki_http::AsyncReadResponseExt;
 use serde_json::Value;
 
 use crate::{
@@ -114,9 +114,9 @@ pub enum AgentError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("http: {0}")]
-    Http(#[from] isahc::Error),
+    Http(#[from] maki_http::Error),
     #[error("http request: {0}")]
-    HttpRequest(#[from] isahc::http::Error),
+    HttpRequest(#[from] maki_http::http::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("channel send failed")]
@@ -310,7 +310,7 @@ impl AgentError {
         }
     }
 
-    pub async fn from_response(mut response: isahc::Response<isahc::AsyncBody>) -> Self {
+    pub async fn from_response(mut response: maki_http::Response<maki_http::AsyncBody>) -> Self {
         let status = response.status().as_u16();
         let retry_after = response
             .headers()
@@ -381,11 +381,8 @@ impl From<maki_storage::StorageError> for AgentError {
 /// [`RetryKind::Transient`], unbounded, and a blackholed SYN keeps trying where
 /// a refused port gives up in seconds. Splitting the two means tracking whether
 /// any byte ever arrived.
-fn is_connect_failure(e: &isahc::Error) -> bool {
-    matches!(
-        e.kind(),
-        HttpErrorKind::ConnectionFailed | HttpErrorKind::NameResolution
-    )
+fn is_connect_failure(e: &maki_http::Error) -> bool {
+    e.is_connect()
 }
 
 /// Only the delta-seconds form ("30", "60"). The HTTP-date form is legal but
@@ -579,16 +576,35 @@ mod tests {
             .count() as u32
     }
 
+    fn refused_connection() -> maki_http::Error {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("bind loopback")
+            .port();
+        let request = maki_http::Request::get(format!("http://127.0.0.1:{port}"))
+            .body(())
+            .unwrap();
+        maki_http::HttpClient::new()
+            .unwrap()
+            .send(request)
+            .expect_err("nothing listens on a dropped port")
+    }
+
+    fn other_transport_failure() -> maki_http::Error {
+        maki_http::Request::get("\0").body(()).unwrap_err().into()
+    }
+
     /// A dead provider edge and a local server nobody started both land in
-    /// `ConnectionFailed`, so the run has to give up on it, while a failure on
+    /// a connect failure, so the run has to give up on it, while a failure on
     /// a connection that was made is the network being the network and is
     /// waited out.
-    #[test_case(HttpErrorKind::ConnectionFailed, DEFAULT_MAX_RETRIES ; "a_refused_connection_gives_up")]
-    #[test_case(HttpErrorKind::NameResolution, DEFAULT_MAX_RETRIES   ; "an_unresolvable_host_gives_up")]
-    #[test_case(HttpErrorKind::Io, ROUNDS                            ; "a_read_error_keeps_retrying")]
-    #[test_case(HttpErrorKind::TlsEngine, ROUNDS                     ; "a_tls_failure_keeps_retrying")]
-    fn a_transport_failure_is_waited_out_only_once_connected(kind: HttpErrorKind, expected: u32) {
-        assert_eq!(retries_granted(&AgentError::Http(kind.into())), expected);
+    #[test_case(refused_connection, DEFAULT_MAX_RETRIES ; "a_refused_connection_gives_up")]
+    #[test_case(other_transport_failure, ROUNDS         ; "other_failure_keeps_retrying")]
+    fn a_transport_failure_is_waited_out_only_once_connected(
+        error: fn() -> maki_http::Error,
+        expected: u32,
+    ) {
+        assert_eq!(retries_granted(&AgentError::Http(error())), expected);
     }
 
     #[test_case(io::ErrorKind::ConnectionRefused, DEFAULT_MAX_RETRIES ; "a_refused_socket_gives_up")]
@@ -597,10 +613,10 @@ mod tests {
         assert_eq!(retries_granted(&AgentError::Io(kind.into())), expected);
     }
 
-    #[test_case(HttpErrorKind::ConnectionFailed, CONNECT_FAILED_MESSAGE ; "connect_failure_names_the_server")]
-    #[test_case(HttpErrorKind::TlsEngine, NETWORK_ERROR_MESSAGE         ; "other_transport_blames_the_network")]
-    fn user_message_transport(kind: HttpErrorKind, expected: &str) {
-        assert_eq!(AgentError::Http(kind.into()).user_message(), expected);
+    #[test_case(refused_connection, CONNECT_FAILED_MESSAGE     ; "connect_failure_names_the_server")]
+    #[test_case(other_transport_failure, NETWORK_ERROR_MESSAGE ; "other_transport_blames_the_network")]
+    fn user_message_transport(error: fn() -> maki_http::Error, expected: &str) {
+        assert_eq!(AgentError::Http(error()).user_message(), expected);
     }
 
     #[test_case("30", Some(Duration::from_secs(30)) ; "delta_seconds")]

@@ -494,8 +494,8 @@ impl ToolInvocation for LuaToolInvocation {
             let recv = async { Some(reply_rx.recv_async().await) };
             let result = match effective_secs {
                 Some(secs) => {
-                    futures_lite::future::race(recv, async move {
-                        smol::Timer::after(Duration::from_secs(secs)).await;
+                    maki_rt::race(recv, async move {
+                        tokio::time::sleep(Duration::from_secs(secs)).await;
                         None
                     })
                     .await
@@ -1957,7 +1957,7 @@ mod tests {
         let inv = tool
             .parse(&serde_json::json!({"url": "https://example.com"}))
             .unwrap();
-        let scopes = smol::block_on(inv.permission_scopes());
+        let scopes = maki_rt::block_on(inv.permission_scopes());
         assert_eq!(
             scopes.unwrap().scopes,
             vec!["https://example.com".to_string()]
@@ -1971,7 +1971,7 @@ mod tests {
         let inv = make_lua_tool(Some(PermissionScopeKind::Field(Arc::from(field))))
             .parse(&input)
             .unwrap();
-        let scopes = smol::block_on(inv.permission_scopes()).expect("should fail closed");
+        let scopes = maki_rt::block_on(inv.permission_scopes()).expect("should fail closed");
         assert!(scopes.force_prompt);
         assert_eq!(scopes.scopes, vec![input.to_string()]);
     }
@@ -1981,7 +1981,7 @@ mod tests {
         let unconfigured = make_lua_tool(None)
             .parse(&serde_json::json!({"url": "https://example.com"}))
             .unwrap();
-        assert!(smol::block_on(unconfigured.permission_scopes()).is_none());
+        assert!(maki_rt::block_on(unconfigured.permission_scopes()).is_none());
     }
 
     #[test]
@@ -2051,7 +2051,7 @@ mod tests {
             start_annotation: None,
             has_start_fn: false,
         };
-        let scopes = smol::block_on(inv.permission_scopes()).expect("should fallback");
+        let scopes = maki_rt::block_on(inv.permission_scopes()).expect("should fallback");
         assert!(scopes.force_prompt);
         assert!(!scopes.scopes.is_empty());
 
@@ -2074,7 +2074,7 @@ mod tests {
                 let _ = reply.send(None);
             }
         });
-        let scopes2 = smol::block_on(inv2.permission_scopes()).expect("should fallback");
+        let scopes2 = maki_rt::block_on(inv2.permission_scopes()).expect("should fallback");
         assert!(scopes2.force_prompt);
     }
 
@@ -2101,7 +2101,7 @@ mod tests {
                 }));
             }
         });
-        let result = smol::block_on(inv.permission_scopes());
+        let result = maki_rt::block_on(inv.permission_scopes());
         let scopes = result.unwrap();
         assert_eq!(scopes.scopes, vec!["cargo", "test"]);
         assert!(!scopes.force_prompt);
@@ -2282,6 +2282,6 @@ mod tests {
             ..invocation(serde_json::json!({"code": "x"}))
         };
         let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
-        smol::block_on(inv.start(&ctx));
+        maki_rt::block_on(inv.start(&ctx));
     }
 }

@@ -48,7 +48,7 @@ pub(crate) struct AgentHandles {
     subagent_cancels: Arc<CancelMap<String>>,
     model_policy: Arc<ModelPolicy>,
     mailbox: SessionMailbox,
-    task: smol::Task<()>,
+    task: maki_rt::Task<()>,
 }
 
 impl AgentHandles {
@@ -143,7 +143,7 @@ impl AgentHandles {
         // here so no caller can respawn without it.
         app.run_id += 1;
         let slot = model_slot.load();
-        if let Err(e) = smol::block_on(slot.provider.reload_auth()) {
+        if let Err(e) = maki_rt::block_on(slot.provider.reload_auth()) {
             warn!(error = %e, "failed to reload auth, continuing with existing credentials");
         }
         let new = spawn_agent_internal(
@@ -182,19 +182,19 @@ impl AgentHandles {
     /// wind down. The caller sends `CancelAll` first and then awaits all
     /// tabs at once via [`join_all`] instead of paying a serial timeout
     /// per tab.
-    pub(crate) fn into_task(self) -> smol::Task<()> {
+    pub(crate) fn into_task(self) -> maki_rt::Task<()> {
         self.task
     }
 }
 
 /// Wait for every agent task under one shared timeout, not one per task.
-pub(crate) fn join_all(tasks: Vec<smol::Task<()>>, timeout: Duration) {
+pub(crate) fn join_all(tasks: Vec<maki_rt::Task<()>>, timeout: Duration) {
     info!(
         count = tasks.len(),
         "waiting for agents to finish (timeout {timeout:?})"
     );
-    smol::block_on(async {
-        let finished = futures_lite::future::or(
+    maki_rt::block_on(async {
+        let finished = maki_rt::or(
             async {
                 for task in tasks {
                     task.await;
@@ -202,7 +202,7 @@ pub(crate) fn join_all(tasks: Vec<smol::Task<()>>, timeout: Duration) {
                 true
             },
             async {
-                smol::Timer::after(timeout).await;
+                tokio::time::sleep(timeout).await;
                 false
             },
         )
@@ -260,7 +260,7 @@ fn spawn_agent_internal(
         Arc::clone(&model_policy),
     );
 
-    let task = smol::spawn(agent_loop.run());
+    let task = maki_rt::spawn(agent_loop.run());
 
     AgentHandles {
         agent_rx,
@@ -681,7 +681,7 @@ mod tests {
     fn join_all_returns_when_all_tasks_complete() {
         join_all(Vec::new(), LONG_TIMEOUT);
         join_all(
-            (0..3).map(|_| smol::spawn(async {})).collect(),
+            (0..3).map(|_| maki_rt::spawn(async {})).collect(),
             LONG_TIMEOUT,
         );
     }
@@ -691,8 +691,8 @@ mod tests {
         let start = Instant::now();
         join_all(
             vec![
-                smol::spawn(async {}),
-                smol::spawn(futures_lite::future::pending::<()>()),
+                maki_rt::spawn(async {}),
+                maki_rt::spawn(std::future::pending::<()>()),
             ],
             SHORT_TIMEOUT,
         );

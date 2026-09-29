@@ -165,7 +165,7 @@ mod tests {
         let lua = Lua::new();
         let bad: Function = lua.load("error('boom')").into_function().unwrap();
         let ok: Function = lua.load("return 7").into_function().unwrap();
-        smol::block_on(async {
+        maki_rt::block_on(async {
             assert!(call_swallowing::<i64>(&bad, (), SEAM, "p").await.is_none());
             assert_eq!(call_swallowing::<i64>(&ok, (), SEAM, "p").await, Some(7));
         });

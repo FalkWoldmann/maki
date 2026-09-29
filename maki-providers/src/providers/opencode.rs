@@ -165,7 +165,7 @@ impl Opencode {
     }
 
     async fn do_list_models(&self) -> Result<Vec<ModelInfo>, AgentError> {
-        Ok(smol::unblock(move || {
+        Ok(maki_rt::unblock(move || {
             let guard = init_shared_catalog_if_needed().lock().unwrap();
             guard.provider(ZEN_SLUG).map_or_else(Vec::new, |data| {
                 data.available_models(&guard.state_dir, data.free_models_enabled())
@@ -184,7 +184,7 @@ impl Opencode {
         let actual_id = actual_id.to_string();
         let session_id = session_id.cloned();
         let auth_override = self.auth.clone();
-        smol::unblock(move || {
+        maki_rt::unblock(move || {
             let guard = init_shared_catalog_if_needed().lock().unwrap();
             let (meta, provider_data) = guard.lookup(&sub_provider, &actual_id)?;
             let override_auth = auth_override

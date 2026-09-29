@@ -246,7 +246,7 @@ async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) ->
     let prefix = opts
         .and_then(|t| t.get::<String>("prefix").ok())
         .unwrap_or_default();
-    let segments = smol::unblock(move || {
+    let segments = maki_rt::unblock(move || {
         maki_highlight::pool::run(move || {
             if independent {
                 maki_highlight::highlight_lines_independent(&lang, &code)
@@ -275,7 +275,7 @@ async fn highlight(lua: Lua, code: String, lang: String, opts: Option<Table>) ->
 /// end
 #[lua_fn]
 async fn markdown(lua: Lua, text: String, width: u16) -> LuaResult<Table> {
-    let lines = smol::unblock(move || {
+    let lines = maki_rt::unblock(move || {
         maki_highlight::pool::run(move || maki_markdown::render::render(&text, width))
     })
     .await;
@@ -1766,7 +1766,7 @@ mod tests {
 
     fn eval(lua: &Lua, script: &str) -> (serde_json::Value, Option<String>) {
         let (val, err): (mlua::Value, Option<String>) =
-            smol::block_on(lua.load(script).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(script).eval_async()).unwrap();
         (lua_to_json(lua, &val).unwrap(), err)
     }
 
@@ -1811,7 +1811,7 @@ mod tests {
         .copied()
         .collect::<Vec<_>>()
         .join(", ");
-        let err = smol::block_on(
+        let err = maki_rt::block_on(
             lua.load(format!(
                 r#"local st = ui.input()
                    return ui.input_edit({{ start = 0, stop = 5, {kept} }})"#

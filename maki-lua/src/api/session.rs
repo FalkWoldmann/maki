@@ -457,7 +457,7 @@ mod tests {
     fn live_without_ui_returns_error_pair() {
         let lua = lua_with_session(None);
         let (val, err): (Value, Option<String>) =
-            smol::block_on(lua.load("return session.live()").eval_async()).unwrap();
+            maki_rt::block_on(lua.load("return session.live()").eval_async()).unwrap();
         assert!(val.is_nil());
         assert_eq!(err.as_deref(), Some(NO_UI_ERR));
     }
@@ -477,7 +477,7 @@ mod tests {
             reply_tx.send(Ok(json!({ "focused": id }))).unwrap();
         });
         let (val, err): (Table, Option<String>) =
-            smol::block_on(lua.load("return session.focus('abc')").eval_async()).unwrap();
+            maki_rt::block_on(lua.load("return session.focus('abc')").eval_async()).unwrap();
         assert_eq!(err, None);
         assert_eq!(val.get::<String>("focused").unwrap(), "abc");
     }
@@ -501,7 +501,7 @@ mod tests {
             reply_tx.send(Ok(json!("queued"))).unwrap();
         });
         let (val, err): (String, Option<String>) =
-            smol::block_on(lua.load(code).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(code).eval_async()).unwrap();
         checker.join().unwrap();
         assert_eq!(err, None);
         assert_eq!(val, "queued");
@@ -533,7 +533,7 @@ mod tests {
             reply_tx.send(Ok(json!(true))).unwrap();
         });
         let (val, err): (bool, Option<String>) =
-            smol::block_on(lua.load(code).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(code).eval_async()).unwrap();
         checker.join().unwrap();
         assert_eq!(err, None);
         assert!(val);
@@ -639,7 +639,7 @@ mod tests {
 
         let code = format!("return session.messages({{ session = '{id}', last = 1 }})");
         let (msgs, err): (Table, Option<String>) =
-            smol::block_on(lua.load(&code).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(&code).eval_async()).unwrap();
         assert_eq!(err, None);
         assert_eq!(msgs.raw_len(), 1);
         let last: Table = msgs.get(1).unwrap();
@@ -654,7 +654,7 @@ mod tests {
         let lua = lua_with_session(None);
         let code = format!("return session.messages({{ session = '{id}' }})");
         let (_, err): (Value, Option<String>) =
-            smol::block_on(lua.load(&code).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(&code).eval_async()).unwrap();
         assert_eq!(err, Some(format!("{NOT_LIVE_ERR}: {id}")));
     }
 
@@ -693,7 +693,7 @@ mod tests {
         let lua = focused_on(id);
 
         let (msgs, err): (Table, Option<String>) =
-            smol::block_on(lua.load("return session.messages()").eval_async()).unwrap();
+            maki_rt::block_on(lua.load("return session.messages()").eval_async()).unwrap();
         assert_eq!(err, None);
         assert_eq!(msgs.raw_len(), 1);
         let block: Table = msgs
@@ -717,7 +717,7 @@ mod tests {
             reply_tx.send(Ok(serde_json::Value::Null)).unwrap();
         });
         let (_, err): (Value, Option<String>) =
-            smol::block_on(lua.load("return session.messages()").eval_async()).unwrap();
+            maki_rt::block_on(lua.load("return session.messages()").eval_async()).unwrap();
         assert_eq!(err.as_deref(), Some(NO_FOCUSED_ERR));
     }
 
@@ -792,7 +792,7 @@ mod tests {
     fn set_title_with_wrong_type_throws() {
         let lua = lua_with_session(None);
         let result: LuaResult<Value> =
-            smol::block_on(lua.load("return session.set_title('oops')").eval_async());
+            maki_rt::block_on(lua.load("return session.set_title('oops')").eval_async());
         assert!(result.unwrap_err().to_string().contains("table"));
     }
 }

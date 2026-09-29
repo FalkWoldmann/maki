@@ -838,8 +838,8 @@ mod tests {
         install_ui_attachment(attachment.clone());
 
         attachment.detach();
-        let detached = smol::block_on(ui_roundtrip(Some(&tx), |reply_tx| UiAction::WinSaveView {
-            reply_tx,
+        let detached = maki_rt::block_on(ui_roundtrip(Some(&tx), |reply_tx| {
+            UiAction::WinSaveView { reply_tx }
         }));
         assert_eq!(detached.err(), Some(NO_UI_ERR));
         assert!(

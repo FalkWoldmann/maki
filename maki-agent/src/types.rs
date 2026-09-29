@@ -1223,7 +1223,7 @@ impl SessionEvents {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::future::poll_once;
+    use futures::FutureExt;
     use std::pin::pin;
     use test_case::test_case;
 
@@ -1871,7 +1871,7 @@ mod tests {
     const NO_LATE_EVENTS: &str = "events queued after the marker must stay invisible";
 
     fn drain(events: &mut SessionEvents) -> Vec<u64> {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut seen = Vec::new();
             while let Some(envelope) = events.next().await {
                 seen.push(envelope.run_id);
@@ -1887,12 +1887,9 @@ mod tests {
     #[test]
     fn queued_events_arrive_in_order_before_the_close() {
         let (guard, mut events) = event_stream();
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut pending = pin!(events.next());
-            assert!(
-                poll_once(pending.as_mut()).await.is_none(),
-                "{STILL_PENDING}"
-            );
+            assert!(pending.as_mut().now_or_never().is_none(), "{STILL_PENDING}");
             for run_id in STREAM_RUN_IDS {
                 guard.sender(run_id).send(AgentEvent::Nudge).unwrap();
             }
@@ -1912,7 +1909,10 @@ mod tests {
         drop(guard);
         retained.send(AgentEvent::Nudge).unwrap();
         assert_eq!(drain(&mut events), [STREAM_RUN_IDS[0]], "{NO_LATE_EVENTS}");
-        assert!(smol::block_on(events.next()).is_none(), "{NO_LATE_EVENTS}");
+        assert!(
+            maki_rt::block_on(events.next()).is_none(),
+            "{NO_LATE_EVENTS}"
+        );
     }
 
     /// A derived sender is just another clone: it stamps its own run id on the

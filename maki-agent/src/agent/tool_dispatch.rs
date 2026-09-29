@@ -1055,12 +1055,12 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use async_lock::Mutex as AsyncMutex;
     use flume::Receiver;
     use maki_config::{
         Effect, Permission, PermissionRule, PermissionsConfig, ProjectConfig, ToolKey,
     };
     use test_case::test_case;
+    use tokio::sync::Mutex as AsyncMutex;
 
     use super::*;
     use crate::cancel::CancelToken;
@@ -1265,7 +1265,7 @@ mod tests {
         fn execute<'a>(self: Box<Self>, _ctx: &'a ToolContext) -> ExecFuture<'a> {
             Box::pin(async move {
                 if self.0 == HOOK_SLOW_COMMAND {
-                    smol::Timer::after(HOOK_SLOW_RUN).await;
+                    tokio::time::sleep(HOOK_SLOW_RUN).await;
                 }
                 Ok(output_of(&self.0)).into()
             })
@@ -1485,7 +1485,7 @@ mod tests {
     #[test_case(build_ctx                                       , false ; "reaches_execute")]
     #[test_case(|| denying_ctx(ToolKey::native(HOOK_TOOL_NAME))  , true  ; "reaches_the_permission_prompt")]
     fn an_input_rewrite_is_the_call_that_runs(build: fn() -> ToolContext, is_error: bool) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, _hook) = hooked_ctx(build());
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_REWRITTEN_FROM)).await;
 
@@ -1500,7 +1500,7 @@ mod tests {
 
     #[test]
     fn input_hook_denial_never_runs_the_tool() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = hooked_ctx(stub_ctx(&AgentMode::Build));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_DENIED)).await;
 
@@ -1518,7 +1518,7 @@ mod tests {
     /// redacts or trims cannot be walked around by failing the call.
     #[test]
     fn a_refused_call_still_reaches_the_output_stage() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = hooked_ctx(denying_ctx(ToolKey::native(HOOK_TOOL_NAME)));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_PLAIN)).await;
 
@@ -1536,7 +1536,7 @@ mod tests {
     /// A name that routes nowhere lends no authority, so nothing fires.
     #[test]
     fn unknown_names_are_not_hooked() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = hooked_ctx(stub_ctx(&AgentMode::Build));
             let done = dispatch(&ctx, "nope", &call_input(HOOK_DENIED)).await;
 
@@ -1570,7 +1570,7 @@ mod tests {
         permission: Option<Permission>,
         expected: Authority,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = hooked_with(build(), permission, RecordingHook::default());
             dispatch(&ctx, name, &call_input(HOOK_PLAIN)).await;
 
@@ -1585,7 +1585,7 @@ mod tests {
     #[test_case(&[HookStage::Input]  ; "input_only")]
     #[test_case(&[HookStage::Output] ; "output_only")]
     fn a_stage_the_hook_declines_never_fires(wrapped: &'static [HookStage]) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = plain_hooked_ctx(RecordingHook::wrapping(wrapped));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_PLAIN)).await;
 
@@ -1606,7 +1606,7 @@ mod tests {
         is_error: bool,
         expected: String,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut ctx = build_ctx();
             ctx.cancel = cancelled_token();
             let (ctx, _hook) = hooked_with(ctx, None, RecordingHook::never_answering(wrapped));
@@ -1622,7 +1622,7 @@ mod tests {
     /// when it is handed that call's own token and an instant to be killed at.
     #[test]
     fn a_firing_carries_the_calls_cancellation_and_deadline() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let at = Instant::now() + HOOK_CALL_DEADLINE;
             let mut ctx = build_ctx();
             ctx.deadline = Deadline::At(at);
@@ -1644,7 +1644,7 @@ mod tests {
     /// which for a slow tool is nothing.
     #[test]
     fn a_call_without_a_deadline_bounds_each_stage_from_where_it_starts() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = hooked_ctx(build_ctx());
             let before = Instant::now();
 
@@ -1696,7 +1696,7 @@ mod tests {
         is_error: bool,
         expected: String,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, _hook) = plain_hooked_ctx(RecordingHook::answering(answer));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_PLAIN)).await;
 
@@ -1709,7 +1709,7 @@ mod tests {
     /// editing it would desync the fields from the text.
     #[test]
     fn a_rendered_output_skips_the_output_stage() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = plain_hooked_ctx(RecordingHook::answering(deny_the_output));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_DIFF_COMMAND)).await;
 
@@ -1734,7 +1734,7 @@ mod tests {
     /// survive.
     #[test]
     fn a_rewrite_the_tool_cannot_parse_is_a_parse_error() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, _hook) = plain_hooked_ctx(RecordingHook::answering(drop_the_field));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_PLAIN)).await;
 
@@ -1757,7 +1757,7 @@ mod tests {
     #[test_case(RecordingHook::answering(rewrite_the_target), crate::tools::PLAN_WRITE_RESTRICTED.to_owned() ; "rewritten_away_from_the_plan_file")]
     #[test_case(RecordingHook::default(),                     ran(PLAN_PATH)                                 ; "left_on_the_plan_file")]
     fn a_rewritten_write_target_is_still_plan_gated(hook: RecordingHook, expected: String) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let plan = AgentMode::Plan(PathBuf::from(PLAN_PATH));
             let (ctx, _hook) = hooked_with(stub_ctx(&plan), None, hook);
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(PLAN_PATH)).await;
@@ -1770,7 +1770,7 @@ mod tests {
     /// call's identity would write onto that other call.
     #[test]
     fn both_stages_carry_the_call_id_the_session_and_the_origin() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let session = SessionRef::generate();
             let mut ctx = build_ctx();
             ctx.session_id = Some(session.clone());
@@ -1794,7 +1794,7 @@ mod tests {
     #[test_case(HOOK_REWRITTEN_FROM, Some(HOOK_REWRITTEN_TO) ; "a_rewritten_call_records_the_rewrite")]
     #[test_case(HOOK_DENIED,         None                    ; "a_stopped_call_records_nothing")]
     fn the_call_record_holds_the_input_that_ran(command: &str, expected: Option<&str>) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, _hook) = hooked_ctx(build_ctx());
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(command)).await;
 
@@ -1806,7 +1806,7 @@ mod tests {
     /// the model sent before the input stage had its say.
     #[test]
     fn the_output_stage_sees_the_input_that_ran_and_the_tool_kind() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, hook) = hooked_ctx(build_ctx());
             dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_REWRITTEN_FROM)).await;
 
@@ -1918,7 +1918,7 @@ mod tests {
         answer: PermissionAnswer,
         expected_start: String,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, events) = answered(build(), answer);
             let (ctx, _hook) = hooked_with(ctx, None, RecordingHook::answering(ask_as_is));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_PLAIN)).await;
@@ -1939,7 +1939,7 @@ mod tests {
     /// runs, or approving one command would run another.
     #[test]
     fn an_ask_with_a_rewrite_prompts_for_and_runs_the_rewrite() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, events) = answered(build_ctx(), PermissionAnswer::AllowOnce);
             let (ctx, _hook) = hooked_with(ctx, None, RecordingHook::answering(ask_with_a_rewrite));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_PLAIN)).await;
@@ -1962,7 +1962,7 @@ mod tests {
     /// The queued allow is the control: were the user asked, the call would run.
     #[test]
     fn a_deny_rule_refuses_an_ask_without_prompting() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, events) = answered(
                 denying_ctx(ToolKey::native(HOOK_TOOL_NAME)),
                 PermissionAnswer::AllowOnce,
@@ -2003,7 +2003,7 @@ mod tests {
         tool: ToolKey,
         input: Value,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (ctx, events) = answered(build(), PermissionAnswer::AllowOnce);
             ctx.registry.set_hook(RecordingHook::answering(ask_as_is));
             dispatch(&ctx, name, &input).await;
@@ -2014,7 +2014,7 @@ mod tests {
 
     #[test]
     fn local_tool_shadows_registry_and_maps_errors() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut ctx = local_ctx(SHADOWED_NAME, |input| {
                 Ok(format!("local:{}", input["path"]))
             });
@@ -2032,7 +2032,7 @@ mod tests {
 
     #[test]
     fn nested_call_instructions_surface_once_on_the_model_call() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut ctx = stub_ctx(&AgentMode::Build);
             ctx.local_tools = Arc::new(HashMap::from([
                 (
@@ -2080,7 +2080,7 @@ mod tests {
 
     #[test]
     fn sibling_model_calls_carry_a_found_file_once() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut ctx = stub_ctx(&AgentMode::Build);
             ctx.local_tools = Arc::new(HashMap::from([(
                 INSTRUCTED_TOOL.to_owned(),
@@ -2111,7 +2111,7 @@ mod tests {
 
     #[test]
     fn functions_prefixed_name_dispatches_to_canonical_tool() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let ctx = local_ctx("ok", |_| Ok("ran".into()));
             let done = dispatch(&ctx, "functions.ok", &serde_json::json!({})).await;
             assert!(!done.is_error);
@@ -2121,7 +2121,7 @@ mod tests {
 
     #[test]
     fn local_tool_notify_emits_tool_start_with_raw_input() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (tx, rx) = flume::unbounded::<crate::Envelope>();
             let event_tx = crate::EventSender::new(tx, 0);
             let mut ctx =
@@ -2152,7 +2152,7 @@ mod tests {
 
     #[test]
     fn tool_search_routes_and_loads_matches() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mcp = stub_mcp(&[PROBE_QUALIFIED]);
             let done = dispatch(
                 &mcp_ctx(&mcp),
@@ -2176,7 +2176,7 @@ mod tests {
     #[test_case(serde_json::json!({"query": "  "}) ; "blank_query")]
     #[test_case(serde_json::json!({}) ; "missing_query")]
     fn tool_search_bad_query_is_error_event(input: Value) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let done = dispatch(
                 &mcp_ctx(&stub_mcp(&[PROBE_QUALIFIED])),
                 TOOL_SEARCH_TOOL_NAME,
@@ -2190,7 +2190,7 @@ mod tests {
 
     #[test]
     fn calling_deferred_mcp_tool_marks_it_loaded() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mcp = stub_mcp(&[PROBE_QUALIFIED]);
             let done = dispatch(&mcp_ctx(&mcp), PROBE_WIRE, &serde_json::json!({})).await;
             assert_eq!(done.tool.as_ref(), PROBE_QUALIFIED, "must route to MCP");
@@ -2211,7 +2211,7 @@ mod tests {
     #[test_case(PROBE_WIRE, serde_json::json!({}), PROBE_QUALIFIED ; "tool_call")]
     #[test_case(TOOL_SEARCH_TOOL_NAME, serde_json::json!({"query": "probe"}), TOOL_SEARCH_TOOL_NAME ; "tool_search")]
     fn nested_call_reaches_mcp_without_loading_anything(name: &str, input: Value, routed: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mcp = stub_mcp(&[PROBE_QUALIFIED]);
             let done = dispatch_nested(&mcp_ctx(&mcp), name, &input).await;
             assert_eq!(done.tool.as_ref(), routed, "must route to MCP");
@@ -2228,7 +2228,7 @@ mod tests {
 
     #[test]
     fn denied_mcp_call_does_not_load_definition() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mcp = stub_mcp(&[PROBE_QUALIFIED]);
             let ctx = with_mcp(denying_ctx(ToolKey::parse(PROBE_QUALIFIED).unwrap()), &mcp);
             let done = dispatch(&ctx, PROBE_WIRE, &serde_json::json!({})).await;
@@ -2251,7 +2251,7 @@ mod tests {
 
     #[test]
     fn local_tool_named_tool_search_shadows_mcp_search() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mcp = stub_mcp(&[PROBE_QUALIFIED]);
             let ctx = with_mcp(
                 local_ctx(TOOL_SEARCH_TOOL_NAME, |_| Ok("local wins".into())),
@@ -2425,7 +2425,7 @@ mod tests {
     #[test_case(None, "nonexistent.tool" ; "without_mcp")]
     #[test_case(Some(PROBE_QUALIFIED), OTHER_WIRE ; "unpublished_wire_name")]
     fn unknown_tool_errors_and_echoes_the_name_verbatim(published: Option<&str>, name: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mcp = published.map(|tool| stub_mcp(&[tool]));
             let ctx = match &mcp {
                 Some(mcp) => mcp_ctx(mcp),
@@ -2444,7 +2444,7 @@ mod tests {
     /// allow rule is the user's answer already, so the call goes through.
     #[test]
     fn mcp_tool_allowed_by_rule_in_plan_mode() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let plan = AgentMode::Plan(PathBuf::from(PLAN_PATH));
             let ctx = with_mcp(
                 ruled_ctx(
@@ -2479,7 +2479,7 @@ mod tests {
     /// stub has no channel to ask on, hence the denial below.
     #[test]
     fn mcp_tool_in_plan_mode_is_never_auto_approved() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let plan = AgentMode::Plan(PathBuf::from(PLAN_PATH));
             let ctx = with_mcp(stub_ctx(&plan), &stub_mcp(&[PROBE_QUALIFIED]));
             let done = dispatch(&ctx, PROBE_WIRE, &serde_json::json!({})).await;
@@ -2497,7 +2497,7 @@ mod tests {
 
     #[test]
     fn mcp_tool_denied_by_rule_in_plan_mode() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let plan = AgentMode::Plan(PathBuf::from(PLAN_PATH));
             let ctx = with_mcp(
                 ruled_ctx(
@@ -2519,7 +2519,7 @@ mod tests {
 
     #[test]
     fn permission_denial_short_circuits_execute() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut ctx = denying_ctx(ToolKey::native(GUARDED_TOOL_NAME));
             ctx.registry = registered(Arc::new(GuardedMock));
 
@@ -2587,7 +2587,7 @@ mod tests {
     /// A denied tool should still get its preview, but never its `execute`.
     #[test]
     fn start_runs_before_permission_denial_blocks_execute() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut ctx = denying_ctx(ToolKey::native(START_PROBE_NAME));
             let probe = StartProbe::default();
             let (started, executed) = (Arc::clone(&probe.started), Arc::clone(&probe.executed));

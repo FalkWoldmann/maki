@@ -5,13 +5,12 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use futures_lite::io::AsyncReadExt;
-use isahc::config::{Configurable, RedirectPolicy, ResolveMap, VersionNegotiation};
-use isahc::{AsyncBody, HttpClient, Request, Response};
+use maki_http::config::{RedirectPolicy, ResolveMap, VersionNegotiation};
+use maki_http::{AsyncBody, HttpClient, Request, Response};
 use maki_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Table};
 use regex::bytes::Regex;
-use smol::{Timer, unblock};
+use tokio::io::AsyncReadExt;
 use url::Url;
 
 use crate::api::util::pair::{Pair, try_pair};
@@ -675,7 +674,7 @@ async fn resolve(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
     let mut attempt = 1;
     loop {
         let target = (host.to_string(), port);
-        match unblock(move || target.to_socket_addrs()).await {
+        match maki_rt::unblock(move || target.to_socket_addrs()).await {
             Ok(addrs) => return Ok(addrs.collect()),
             Err(e) if attempt == DNS_ATTEMPTS => return Err(e),
             Err(e) => {
@@ -683,7 +682,7 @@ async fn resolve(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
             }
         }
         attempt += 1;
-        Timer::after(DNS_RETRY_DELAY).await;
+        tokio::time::sleep(DNS_RETRY_DELAY).await;
     }
 }
 
@@ -842,7 +841,7 @@ mod tests {
     /// The guard went async when the name lookup moved off the executor thread.
     /// Driving it to completion here keeps the tests below about the verdict.
     fn ssrf(url: &str, allowed: &HostAllowlist) -> Result<Option<DnsPin>, String> {
-        smol::block_on(check_ssrf(url, allowed))
+        maki_rt::block_on(check_ssrf(url, allowed))
     }
 
     fn redirect(
@@ -851,11 +850,11 @@ mod tests {
         location: &str,
         allowed: &HostAllowlist,
     ) -> Result<(), String> {
-        smol::block_on(params.follow_redirect(status, location, allowed))
+        maki_rt::block_on(params.follow_redirect(status, location, allowed))
     }
 
     fn request_params(url: &str, opts: Option<&Table>) -> Result<RequestParams, String> {
-        smol::block_on(extract_request_params(url, opts))
+        maki_rt::block_on(extract_request_params(url, opts))
     }
 
     #[test_case(&[], "https://example.com/", "https://example.com/" ; "https_passthrough")]

@@ -3,8 +3,8 @@ use std::{env, thread};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use isahc::ReadResponseExt;
-use isahc::config::{Configurable, VersionNegotiation};
+use maki_http::ReadResponseExt;
+use maki_http::config::VersionNegotiation;
 use maki_storage::StateDir;
 use maki_storage::auth::{OAuthTokens, delete_tokens, load_tokens, now_millis, save_tokens};
 use serde::Deserialize;
@@ -55,8 +55,8 @@ struct TokenResponse {
     expires_in: Option<u64>,
 }
 
-fn http_client(timeout: Duration) -> Result<isahc::HttpClient, AgentError> {
-    isahc::HttpClient::builder()
+fn http_client(timeout: Duration) -> Result<maki_http::HttpClient, AgentError> {
+    maki_http::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(timeout)
         // curl carries http2 for OTLP.
@@ -108,7 +108,7 @@ fn request_device_code() -> Result<DeviceCodeResponse, AgentError> {
     let body = serde_json::json!({"client_id": CLIENT_ID});
     let json_body = serde_json::to_vec(&body)?;
 
-    let request = isahc::Request::builder()
+    let request = maki_http::Request::builder()
         .method("POST")
         .uri(DEVICE_CODE_URL)
         .header("content-type", "application/json")
@@ -150,7 +150,7 @@ fn poll_device_token(device: &DeviceCodeResponse) -> Result<DeviceTokenResponse,
 
         thread::sleep(poll_interval);
 
-        let request = isahc::Request::builder()
+        let request = maki_http::Request::builder()
             .method("POST")
             .uri(DEVICE_TOKEN_URL)
             .header("content-type", "application/json")
@@ -194,7 +194,7 @@ fn exchange_authorization_code(
         urlenc(verifier),
     );
 
-    let request = isahc::Request::builder()
+    let request = maki_http::Request::builder()
         .method("POST")
         .uri(OAUTH_TOKEN_URL)
         .header("content-type", "application/x-www-form-urlencoded")
@@ -252,7 +252,7 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
         urlenc(CLIENT_ID),
     );
 
-    let request = isahc::Request::builder()
+    let request = maki_http::Request::builder()
         .method("POST")
         .uri(OAUTH_TOKEN_URL)
         .header("content-type", "application/x-www-form-urlencoded")

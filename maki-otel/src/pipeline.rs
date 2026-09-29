@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use flume::{Receiver, Sender};
-use futures_lite::{StreamExt, future, stream};
+use futures::StreamExt;
+use futures::stream::{PollNext, select_with_strategy};
+use tokio::time::timeout_at;
 
 use crate::attr::AttrSet;
 use crate::encode::otlp::{LogsPayload, MetricsPayload};
@@ -98,12 +100,14 @@ impl Pipeline {
     /// polled before shutdown, so by the time a shutdown is seen both queues
     /// are already empty and the final export cannot miss anything.
     pub async fn run(mut self, inputs: Inputs) {
-        let mut events = stream::or(
-            stream::or(
+        let mut events = select_with_strategy(
+            select_with_strategy(
                 inputs.logs.into_stream().map(Event::Log),
                 inputs.metrics.into_stream().map(Event::Measurement),
+                prefer_left,
             ),
             inputs.shutdown.into_stream().map(Event::Shutdown),
+            prefer_left,
         );
 
         let mut metrics_at = Instant::now() + self.metrics_interval;
@@ -111,11 +115,9 @@ impl Pipeline {
 
         loop {
             let deadline = metrics_at.min(logs_at);
-            let event = future::or(events.next(), async {
-                smol::Timer::at(deadline).await;
-                Some(Event::Tick)
-            })
-            .await;
+            let event = timeout_at(deadline.into(), events.next())
+                .await
+                .unwrap_or(Some(Event::Tick));
 
             match event {
                 None => break,
@@ -204,17 +206,20 @@ impl Pipeline {
     }
 }
 
+/// Always drains the left stream first, so telemetry beats a shutdown.
+fn prefer_left(_: &mut ()) -> PollNext {
+    PollNext::Left
+}
+
 /// Failures are logged and swallowed: telemetry must never reach the user.
 async fn send_all(exporters: &[Box<dyn Transport>], payload: &Payload<'_>, deadline: Instant) {
     for exporter in exporters {
         let remaining = deadline.saturating_duration_since(Instant::now());
         // The transport honours the deadline itself; the race is a backstop
         // against one that hangs, so it can never wedge the pipeline.
-        let result = future::or(exporter.export(payload, deadline), async {
-            smol::Timer::at(deadline).await;
-            Err(crate::transport::ExportError::Timeout(remaining))
-        })
-        .await;
+        let result = timeout_at(deadline.into(), exporter.export(payload, deadline))
+            .await
+            .unwrap_or(Err(crate::transport::ExportError::Timeout(remaining)));
         if let Err(error) = result {
             tracing::warn!(%error, "otel export failed");
         }
@@ -323,7 +328,7 @@ mod tests {
                 0,
             );
             let thread = std::thread::spawn(move || {
-                smol::block_on(pipeline.run(Inputs {
+                maki_rt::block_on(pipeline.run(Inputs {
                     metrics,
                     logs,
                     shutdown,

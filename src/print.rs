@@ -199,7 +199,7 @@ pub fn run(params: PrintParams) -> Result<()> {
     let prompt_slots = lua_handle.collect_prompt_slots();
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let (mcp_handle, mcp_config_errors) = smol::block_on(maki_agent::mcp::start_connected(
+    let (mcp_handle, mcp_config_errors) = maki_rt::block_on(maki_agent::mcp::start_connected(
         &cwd,
         project_config.clone(),
     ));
@@ -277,7 +277,7 @@ pub fn run(params: PrintParams) -> Result<()> {
         || MODE_BUILD,
     );
 
-    while let Some(envelope) = smol::block_on(events.next()) {
+    while let Some(envelope) = maki_rt::block_on(events.next()) {
         // Folded in first, so a plugin handling `TurnEnd` finds the finished
         // totals when it calls `maki.session.read()`.
         snapshot.observe(&envelope);
@@ -393,7 +393,7 @@ pub fn run(params: PrintParams) -> Result<()> {
             }
         }
     }
-    smol::block_on(headless::await_shutdown(task));
+    maki_rt::block_on(headless::await_shutdown(task));
     lua_handle.end_sessions_blocking([session_id.id()], SessionEndReason::Completed);
 
     let duration_ms = start.elapsed().as_millis();

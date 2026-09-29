@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::SessionRef;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::debug;
 
 use maki_config::providers::Protocol;
@@ -374,7 +374,7 @@ impl Anthropic {
         self
     }
 
-    fn build_request(&self, method: &str, path: &str) -> isahc::http::request::Builder {
+    fn build_request(&self, method: &str, path: &str) -> maki_http::http::request::Builder {
         let auth = self.auth.lock().unwrap();
         let base = auth.base_url.as_deref().unwrap_or(API_ORIGIN);
         let url = format!("{}{path}", origin(base));
@@ -598,7 +598,7 @@ struct ModelsPage {
 }
 
 pub(crate) async fn parse_sse(
-    response: isahc::Response<isahc::AsyncBody>,
+    response: maki_http::Response<maki_http::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
@@ -775,14 +775,17 @@ mod tests {
         assert_eq!(origin(input), expected);
     }
 
-    fn mock_response(data: impl Into<Vec<u8>>) -> isahc::Response<isahc::AsyncBody> {
-        let body = isahc::AsyncBody::from(data.into());
-        isahc::Response::builder().status(200).body(body).unwrap()
+    fn mock_response(data: impl Into<Vec<u8>>) -> maki_http::Response<maki_http::AsyncBody> {
+        let body = maki_http::AsyncBody::from(data.into());
+        maki_http::Response::builder()
+            .status(200)
+            .body(body)
+            .unwrap()
     }
 
     #[test]
     fn parse_sse_text_and_usage() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = b"\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":8}}}\n\
@@ -844,7 +847,7 @@ data: {\"type\":\"message_stop\"}\n";
         "same_counts_in_message_start"
     )]
     fn parse_sse_usage_in_message_delta(start_usage: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = format!(
                 "event: message_start\n\
 data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{start_usage}}}}}\n\
@@ -876,7 +879,7 @@ data: {{\"type\":\"message_stop\"}}\n"
 
     #[test]
     fn parse_sse_no_space_after_colon() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = b"\
 event:message_start\n\
 data:{\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}\n\
@@ -909,7 +912,7 @@ data:{\"type\":\"message_stop\"}\n";
 
     #[test]
     fn parse_sse_tool_use() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\
@@ -1192,7 +1195,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
     #[test]
     fn parse_sse_overloaded_error() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let input = b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
             let (tx, _rx) = flume::unbounded();
             let err = parse_sse(mock_response(input), &tx, TEST_STREAM_TIMEOUT)
@@ -1212,7 +1215,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
     #[test]
     fn parse_sse_unparseable_error() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let input = b"event: error\ndata: not-json\n";
             let (tx, _rx) = flume::unbounded();
             let err = parse_sse(mock_response(input), &tx, TEST_STREAM_TIMEOUT)
@@ -1232,7 +1235,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
     #[test]
     fn parse_sse_malformed_tool_json_yields_empty_object() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
@@ -1263,7 +1266,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
 
     #[test]
     fn parse_sse_thinking_blocks() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = b"\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\
@@ -1321,7 +1324,7 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
 
     #[test]
     fn parse_sse_redacted_thinking() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse_data = b"\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\

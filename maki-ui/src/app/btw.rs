@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use flume::Sender;
-use futures_lite::future;
 use maki_providers::provider::Provider;
 use maki_providers::{Message, Model, ProviderEvent, RequestOptions};
 use maki_storage::id::SessionRef;
@@ -52,7 +51,7 @@ impl App {
         self.btw_modal.open(&question, rx);
 
         let session_id = SessionRef::from(self.state.session.id);
-        smol::spawn(run_btw(
+        maki_rt::spawn(run_btw(
             provider,
             model,
             system,
@@ -99,7 +98,7 @@ async fn run_btw(
         }
     };
 
-    let (result, _) = future::zip(stream_fut, forward_fut).await;
+    let (result, _) = tokio::join!(stream_fut, forward_fut);
 
     match result {
         Ok(_) => {

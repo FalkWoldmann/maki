@@ -215,7 +215,7 @@ fn exec_with_ctx(
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
     let inv = entry.tool.parse(&input).expect("parse failed");
-    smol::block_on(async { inv.execute(ctx).await }).output
+    maki_rt::block_on(async { inv.execute(ctx).await }).output
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: Value) -> Result<String, String> {
@@ -1206,7 +1206,7 @@ fn exec_batch_live(
         .tool
         .parse(&input)
         .expect("parse failed");
-    let state = smol::block_on(async { inv.execute(&ctx).await })
+    let state = maki_rt::block_on(async { inv.execute(&ctx).await })
         .output
         .expect("batch failed")
         .state()
@@ -1248,7 +1248,7 @@ fn parallel_edits_to_one_file_all_apply() {
 }
 
 /// Overlapping edits cannot both apply, so the contract is that the loser
-/// says so. Which one loses is `async_lock`'s business, not ours.
+/// says so. Which one loses is the file lock's business, not ours.
 #[test]
 fn overlapping_parallel_edits_fail_loudly() {
     let dir = tempfile::TempDir::new().unwrap();

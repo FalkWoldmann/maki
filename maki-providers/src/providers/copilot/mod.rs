@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flume::Sender;
-use futures_lite::io::BufReader;
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::SessionRef;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::BufReader;
 use tracing::{debug, warn};
 
 use super::anthropic::shared;
@@ -328,7 +328,7 @@ impl Copilot {
         path: &str,
         interaction_type: Option<&str>,
         body: &Value,
-    ) -> Result<isahc::http::request::Builder, AgentError> {
+    ) -> Result<maki_http::http::request::Builder, AgentError> {
         debug!(
             path,
             body_bytes = serde_json::to_vec(body)?.len(),
@@ -629,10 +629,10 @@ async fn try_discover_api_endpoint(
 }
 
 fn copilot_request(
-    builder: isahc::http::request::Builder,
+    builder: maki_http::http::request::Builder,
     auth: &CopilotAuth,
     interaction_type: Option<&str>,
-) -> isahc::http::request::Builder {
+) -> maki_http::http::request::Builder {
     let builder = builder
         .header("authorization", format!("Bearer {}", auth.token))
         .header("content-type", "application/json")

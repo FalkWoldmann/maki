@@ -319,7 +319,7 @@ fn exec_live(host: &PluginHost, reg: &ToolRegistry, tool: &str, input: Value) ->
         .tool
         .parse(&input)
         .expect("parse failed");
-    let result = smol::block_on(async { inv.execute(&ctx).await });
+    let result = maki_rt::block_on(async { inv.execute(&ctx).await });
     host.load_source("live_barrier", "").unwrap();
     let mut body = String::new();
     for env in rx.drain() {

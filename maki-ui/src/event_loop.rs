@@ -491,7 +491,7 @@ pub(crate) struct EventLoop<'t> {
     /// without this a second `/packupdate` would race the first over the same
     /// clones and locks.
     pack_running: bool,
-    _model_fetch_task: smol::Task<()>,
+    _model_fetch_task: maki_rt::Task<()>,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -516,7 +516,7 @@ struct BackgroundModels {
     warn_tx: flume::Sender<String>,
     models_rx: flume::Receiver<()>,
     models_tx: flume::Sender<()>,
-    task: smol::Task<()>,
+    task: maki_rt::Task<()>,
 }
 
 fn merge_batch(
@@ -549,8 +549,8 @@ fn fetch_models(
     policy: Arc<ModelPolicy>,
     warn_tx: flume::Sender<String>,
     models_tx: flume::Sender<()>,
-) -> smol::Task<()> {
-    smol::spawn(async move {
+) -> maki_rt::Task<()> {
+    maki_rt::spawn(async move {
         fetch_all_models(
             &policy,
             |batch| merge_batch(&available, batch, &warn_tx),
@@ -637,7 +637,7 @@ impl<'t> EventLoop<'t> {
         });
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd, project_config));
+        let (mcp_handle, mcp_config_errors) = maki_rt::block_on(mcp::start(&cwd, project_config));
 
         let provider: Arc<dyn Provider> = if needs_login {
             Arc::from(maki_providers::provider::from_model_fallback(
@@ -1182,14 +1182,13 @@ impl<'t> EventLoop<'t> {
         match req {
             SessionRequest::List => {
                 let storage = self.ctx.storage.clone();
-                smol::unblock(move || {
+                maki_rt::handle().spawn_blocking(move || {
                     let cwd = std::env::current_dir().unwrap_or_default();
                     let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
                         .map_err(|e| e.to_string())
                         .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
                     let _ = reply_tx.send(reply);
-                })
-                .detach();
+                });
             }
             // Deletes run on the storage writer thread after any queued
             // flushes, so the loop never blocks on disk and a queued save
@@ -1811,7 +1810,7 @@ impl<'t> EventLoop<'t> {
         let provider = Arc::clone(&rt.slot.load().provider);
         let slot = Arc::clone(&rt.app.usage_slot);
         slot.store(Some(Arc::new(UsageFetchState::Loading)));
-        smol::spawn(async move {
+        maki_rt::spawn(async move {
             let state = match provider.fetch_usage().await {
                 Ok(Some(usage)) => UsageFetchState::Ready(usage),
                 Ok(None) => UsageFetchState::Unsupported,
@@ -1890,7 +1889,7 @@ impl<'t> EventLoop<'t> {
         crate::agent::join_all(agent_tasks, AGENT_SHUTDOWN_TIMEOUT);
         let join_agents_ms = lap();
         if let Some(ref h) = self.ctx.mcp_handle {
-            smol::block_on(h.shutdown());
+            maki_rt::block_on(h.shutdown());
         }
         let mcp_shutdown_ms = lap();
         let unsaved = match Arc::try_unwrap(self.ctx.storage_writer) {

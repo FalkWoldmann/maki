@@ -218,7 +218,7 @@ pub fn redact(text: &str) -> String {
 /// `maki.pack.add` runs while `init.lua` is being sourced, and `init.lua`
 /// executes on the single Lua thread inside an async call. A blocking
 /// `Command::output` there would stall the whole VM, the watchdog included, so
-/// every invocation goes through `smol::unblock` and the caller awaits it. On a
+/// every invocation goes through `maki_rt::unblock` and the caller awaits it. On a
 /// first start a clone can take seconds, which is exactly when this matters.
 ///
 /// The directory is required, never optional. Git reads the config of whatever
@@ -229,7 +229,7 @@ pub fn redact(text: &str) -> String {
 /// owns and the question goes away.
 pub async fn run(args: Vec<String>, cwd: PathBuf) -> Result<GitOutput, GitError> {
     let display = redact(&args.join(" "));
-    let output = smol::unblock(move || {
+    let output = maki_rt::unblock(move || {
         let mut cmd = std::process::Command::new("git");
         cmd.args(&args);
         cmd.current_dir(cwd);
@@ -459,7 +459,7 @@ mod tests {
         let hooks = dir.path().join("nohooks");
         std::fs::create_dir_all(&hooks).unwrap();
 
-        let result = smol::block_on(run(
+        let result = maki_rt::block_on(run(
             rev_parse_args(&hooks, "definitely-not-a-ref"),
             dir.path().to_path_buf(),
         ));

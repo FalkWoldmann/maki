@@ -575,7 +575,7 @@ pub fn models(no_plugins: bool, no_jit: bool, refresh: bool, trust_mode: TrustMo
         }
     }
 
-    smol::block_on(fetch_all_models(
+    maki_rt::block_on(fetch_all_models(
         &config.provider.model_policy,
         |batch| {
             for model in batch.models {
@@ -612,7 +612,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool, trust_mode: TrustMode) 
         .parse(&input)
         .map_err(|e| color_eyre::eyre::eyre!("parse index input: {e}"))?;
     let ctx = maki_agent::tools::cli_tool_ctx();
-    let result = smol::block_on(async { inv.execute(&ctx).await });
+    let result = maki_rt::block_on(async { inv.execute(&ctx).await });
     match result.output {
         Ok(output) => print!("{}", output.as_text()),
         Err(e) => bail!("index failed: {e}"),
@@ -621,7 +621,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool, trust_mode: TrustMode) 
 }
 
 pub fn mcp_auth(server: &str, storage: &StateDir, trust_mode: TrustMode) -> Result<()> {
-    smol::block_on(async {
+    maki_rt::block_on(async {
         let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
         let trust = project::resolve(storage, &cwd, trust_mode);
         super::report_warnings(trust.notices());

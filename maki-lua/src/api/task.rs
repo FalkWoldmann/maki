@@ -118,7 +118,7 @@ mod tests {
     fn without_ui_returns_error_pair(code: &str) {
         let lua = lua_with_task(None);
         let (val, err): (Value, Option<String>) =
-            smol::block_on(lua.load(code).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(code).eval_async()).unwrap();
         assert!(val.is_nil());
         assert_eq!(err.as_deref(), Some(NO_UI_ERR));
     }
@@ -133,7 +133,7 @@ mod tests {
         let host = spawn_host(rx, Err(UNKNOWN_TASK_ERR.to_owned()));
 
         let (val, err): (Value, Option<String>) =
-            smol::block_on(lua.load(code).eval_async()).expect("error reply must not throw");
+            maki_rt::block_on(lua.load(code).eval_async()).expect("error reply must not throw");
         assert!(val.is_nil());
         assert_eq!(err.as_deref(), Some(UNKNOWN_TASK_ERR));
 
@@ -158,7 +158,7 @@ mod tests {
         );
 
         let (ids, statuses, main_name): (String, String, String) =
-            smol::block_on(lua.load(LIST_SCRIPT).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(LIST_SCRIPT).eval_async()).unwrap();
         assert_eq!(ids, format!("{MAIN_ID},{TASK_ID},{DONE_ID},{ERROR_ID}"));
         assert_eq!(
             statuses,
@@ -184,7 +184,7 @@ mod tests {
             };
             reply_tx.send(Ok(json!({ "focused": id }))).unwrap();
         });
-        let (val, err): (Table, Option<String>) = smol::block_on(
+        let (val, err): (Table, Option<String>) = maki_rt::block_on(
             lua.load(format!("return task.focus('{TASK_ID}')"))
                 .eval_async(),
         )

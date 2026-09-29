@@ -159,7 +159,7 @@ fn exec_output_in(
     if let Some(r) = registry_override {
         ctx.registry = r;
     }
-    smol::block_on(async { inv.execute(&ctx).await }).output
+    maki_rt::block_on(async { inv.execute(&ctx).await }).output
 }
 
 const ECHO_PLUGIN: &str = r#"
@@ -313,7 +313,7 @@ fn exec_with_ctx(
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
     let inv = entry.tool.parse(&input).expect("parse failed");
-    smol::block_on(async { inv.execute(ctx).await })
+    maki_rt::block_on(async { inv.execute(ctx).await })
         .output
         .map(|out| match out {
             maki_agent::ToolOutput::Plain(s) => s.text,
@@ -743,7 +743,7 @@ fn handler_state_flows_to_tool_output_and_serde() {
     let entry = reg.get("stateful").unwrap();
     let inv = entry.tool.parse(&serde_json::json!({})).unwrap();
     let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
-    let out = smol::block_on(async { inv.execute(&ctx).await })
+    let out = maki_rt::block_on(async { inv.execute(&ctx).await })
         .output
         .unwrap();
     let expected = serde_json::json!({ "n": 3, "tag": "hi" });
@@ -1056,7 +1056,7 @@ maki.api.register_tool({{
     let mut ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
     ctx.deadline = maki_agent::tools::Deadline::after(std::time::Duration::from_secs(5));
 
-    let result = smol::block_on(async { inv.execute(&ctx).await });
+    let result = maki_rt::block_on(async { inv.execute(&ctx).await });
 
     assert!(result.output.is_err(), "expected error from timed-out loop");
 
@@ -1818,7 +1818,7 @@ fn click_until_finished(
             None,
             Some(click_id),
         );
-        smol::block_on(inv.execute(&ctx)).output
+        maki_rt::block_on(inv.execute(&ctx)).output
     });
     for _ in 0..500 {
         if worker.is_finished() {
@@ -2015,7 +2015,7 @@ fn exec_warm_tool(
         .tool
         .parse(&serde_json::json!({}))
         .expect("parse failed");
-    smol::block_on(inv.execute(ctx)).output
+    maki_rt::block_on(inv.execute(ctx)).output
 }
 
 /// A click on a finished tool takes the warm path: it mutates the live
@@ -2373,7 +2373,7 @@ maki.api.register_tool({{
     let mut ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
     ctx.registry = Arc::clone(&reg);
     let dispatch = || {
-        smol::block_on(maki_agent::agent::tool_dispatch::run(
+        maki_rt::block_on(maki_agent::agent::tool_dispatch::run(
             String::new(),
             "driver",
             &json!({}),
@@ -5379,7 +5379,7 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
     let input = serde_json::json!({ "command": command });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
-    let scopes = smol::block_on(inv.permission_scopes())
+    let scopes = maki_rt::block_on(inv.permission_scopes())
         .expect("permission_scopes returned None (would fall back to raw JSON)");
 
     assert!(
@@ -5419,7 +5419,8 @@ fn bash_permission_scopes_split_per_command(command: &str, expected: &[&str]) {
     let input = serde_json::json!({ "command": command });
     let entry = reg.get("bash").expect("bash registered");
     let inv = entry.tool.parse(&input).expect("parse failed");
-    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+    let scopes =
+        maki_rt::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
 
     assert!(!scopes.force_prompt, "command: {command}");
     assert_eq!(scopes.scopes, expected, "command: {command}");
@@ -5756,7 +5757,7 @@ fn run_start(
         .tool
         .parse(&input)
         .expect("parse failed");
-    smol::block_on(inv.start(&ctx));
+    maki_rt::block_on(inv.start(&ctx));
     rx
 }
 
@@ -6286,7 +6287,7 @@ fn interpreter_bridge_flattens_image_with_visibility_note() {
 
     let mut ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
     ctx.registry = Arc::clone(&reg);
-    let out = smol::block_on(maki_agent::tools::interpreter_bridge::dispatch(
+    let out = maki_rt::block_on(maki_agent::tools::interpreter_bridge::dispatch(
         &ctx,
         "img_probe",
         &serde_json::json!({}),

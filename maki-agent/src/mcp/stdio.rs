@@ -1,24 +1,23 @@
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use async_lock::Mutex;
-
-use futures_lite::io::BufReader;
-use futures_lite::{AsyncBufReadExt, AsyncWriteExt};
 use maki_providers::strip_provider_keys;
 use serde_json::Value;
-use smol::channel;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStdin, Command};
+use tokio::sync::{Mutex, oneshot};
 use tracing::{debug, info, warn};
 
 use super::error::McpError;
 use super::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use super::transport::{BoxFuture, McpTransport};
 
-type PendingMap = HashMap<u64, channel::Sender<Result<Value, McpError>>>;
+type PendingMap = HashMap<u64, oneshot::Sender<Result<Value, McpError>>>;
 
 const LINE_DELIMITER: u8 = b'\n';
 
@@ -26,13 +25,13 @@ use crate::ChildGuard;
 
 pub struct StdioTransport {
     name: Arc<str>,
-    stdin: Mutex<async_process::ChildStdin>,
+    stdin: Mutex<ChildStdin>,
     pending: Arc<Mutex<PendingMap>>,
     next_id: AtomicU64,
     timeout: Duration,
     alive: Arc<AtomicBool>,
-    _reader_task: smol::Task<()>,
-    _stderr_task: smol::Task<()>,
+    _reader_task: maki_rt::Task<()>,
+    _stderr_task: maki_rt::Task<()>,
     _child: ChildGuard,
 }
 
@@ -57,10 +56,10 @@ impl StdioTransport {
             });
         }
 
-        let mut cmd: async_process::Command = std_cmd.into();
-        cmd.stdin(async_process::Stdio::piped())
-            .stdout(async_process::Stdio::piped())
-            .stderr(async_process::Stdio::piped());
+        let mut cmd = Command::from(std_cmd);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| McpError::StartFailed {
             server: name.into(),
             reason: e.to_string(),
@@ -87,25 +86,23 @@ impl StdioTransport {
             let name = Arc::clone(&name);
             let alive = Arc::clone(&alive);
             let pending = Arc::clone(&pending);
-            smol::spawn(async move {
+            maki_rt::spawn(async move {
                 let result = Self::reader_loop(&name, &mut BufReader::new(stdout), &pending).await;
                 if let Err(e) = &result {
                     warn!(server = &*name, error = %e, "MCP reader loop ended");
                 }
                 alive.store(false, Ordering::Release);
                 for (_, sender) in pending.lock().await.drain() {
-                    let _ = sender
-                        .send(Err(McpError::ServerDied {
-                            server: (*name).into(),
-                        }))
-                        .await;
+                    let _ = sender.send(Err(McpError::ServerDied {
+                        server: (*name).into(),
+                    }));
                 }
             })
         };
 
         let stderr_task = {
             let name = Arc::clone(&name);
-            smol::spawn(async move {
+            maki_rt::spawn(async move {
                 let mut reader = BufReader::new(stderr);
                 let mut line = String::new();
                 loop {
@@ -138,7 +135,7 @@ impl StdioTransport {
 
     async fn reader_loop(
         name: &Arc<str>,
-        reader: &mut (impl AsyncBufReadExt + Unpin),
+        reader: &mut (impl AsyncBufRead + Unpin),
         pending: &Mutex<PendingMap>,
     ) -> Result<(), McpError> {
         let mut line = String::new();
@@ -175,7 +172,7 @@ impl StdioTransport {
                             } else {
                                 Ok(resp.result.unwrap_or(Value::Null))
                             };
-                            let _ = sender.send(result).await;
+                            let _ = sender.send(result);
                         } else {
                             debug!(server = &**name, id, "response for unknown request id");
                         }
@@ -240,7 +237,7 @@ impl McpTransport for StdioTransport {
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let req = JsonRpcRequest::new(id, method, params);
 
-            let (tx, rx) = smol::channel::bounded(1);
+            let (tx, rx) = oneshot::channel();
             self.pending.lock().await.insert(id, tx);
 
             if let Err(e) = self.write_line(&self.serialize(&req)?).await {
@@ -248,17 +245,13 @@ impl McpTransport for StdioTransport {
                 return Err(e);
             }
 
-            let result = futures_lite::future::race(
-                async { rx.recv().await.unwrap_or(Err(self.server_died())) },
-                async {
-                    async_io::Timer::after(self.timeout).await;
-                    Err(McpError::Timeout {
-                        server: self.server(),
-                        timeout_ms: self.timeout.as_millis() as u64,
-                    })
-                },
-            )
-            .await;
+            let result = match tokio::time::timeout(self.timeout, rx).await {
+                Ok(reply) => reply.unwrap_or_else(|_| Err(self.server_died())),
+                Err(_) => Err(McpError::Timeout {
+                    server: self.server(),
+                    timeout_ms: self.timeout.as_millis() as u64,
+                }),
+            };
 
             if result.is_err() {
                 self.pending.lock().await.remove(&id);
@@ -307,14 +300,14 @@ impl McpTransport for StdioTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::io::Cursor;
+    use std::io::Cursor;
     use test_case::test_case;
 
     async fn read_single_response(input: &str) -> Result<Value, McpError> {
         let pending: Mutex<PendingMap> = Mutex::new(HashMap::new());
         let name: Arc<str> = Arc::from("test");
 
-        let (tx, rx) = channel::bounded(1);
+        let (tx, mut rx) = oneshot::channel();
         pending.lock().await.insert(1, tx);
 
         let mut reader = BufReader::new(Cursor::new(input.as_bytes().to_vec()));
@@ -331,7 +324,7 @@ mod tests {
     #[test_case("\n\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" ; "blank_lines_before")]
     #[test_case("not json\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" ; "invalid_json_before")]
     fn reader_parses_valid_response(input: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             assert!(read_single_response(input).await.is_ok());
         });
     }
@@ -340,7 +333,7 @@ mod tests {
     fn reader_returns_rpc_error() {
         let input =
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32600,\"message\":\"bad\"}}\n";
-        smol::block_on(async {
+        maki_rt::block_on(async {
             assert!(matches!(
                 read_single_response(input).await,
                 Err(McpError::RpcError { code: -32600, .. })

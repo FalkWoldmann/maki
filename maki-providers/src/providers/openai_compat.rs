@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::MakiId;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tracing::{debug, warn};
 
 use super::ResolvedAuth;
@@ -173,7 +173,7 @@ impl OpenAiCompatProvider {
         method: &str,
         path: &str,
         auth: &ResolvedAuth,
-    ) -> isahc::http::request::Builder {
+    ) -> maki_http::http::request::Builder {
         let base = self.base_url(auth);
         auth.configure_request(
             Request::builder()
@@ -772,7 +772,7 @@ pub async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::io::Cursor;
+    use std::io::Cursor;
     use test_case::test_case;
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
@@ -832,7 +832,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_text_and_usage() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
 \n\
@@ -868,7 +868,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_deepseek_cache_hit_tokens() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20}}\n\
 \n\
@@ -893,7 +893,7 @@ data: [DONE]\n";
     #[test_case(json!({"usd": 0.00045}), None   ; "unknown_shape")]
     #[test_case(json!(null), None               ; "null")]
     fn parse_sse_cost_from_usage(cost: Value, expected: Option<f64>) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let chunk = json!({
                 "choices": [{"finish_reason": "stop", "delta": {}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 10, "cost": cost},
@@ -913,7 +913,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_reasoning_and_content() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}\n\
 \n\
@@ -956,7 +956,7 @@ data: [DONE]\n";
     #[test_case(r#"{"reasoning":"think"}"#; "reasoning_only")]
     #[test_case(r#"{"reasoning_content":"","reasoning":"think"}"#; "empty_reasoning_content_falls_back")]
     fn parse_sse_proxy_reasoning_variants(delta: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = format!("data: {{\"choices\":[{{\"delta\":{delta}}}]}}\n\ndata: [DONE]\n");
 
             let (tx, _rx) = flume::unbounded();
@@ -1057,7 +1057,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_multiple_parallel_tool_calls() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
@@ -1102,7 +1102,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_error_payload_returns_err() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
 
@@ -1125,7 +1125,7 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
 
     #[test]
     fn parse_sse_empty_tool_id_and_name_get_placeholders() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"tool_calls\\\":[{\\\"tool\\\":\\\"read\\\"}]}\"}}]}}]}\n\
 \n\
@@ -1147,7 +1147,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_unnamed_tool_ids_never_repeat() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut minted = Vec::new();
             for _ in 0..RESPONSES {
                 let (tx, rx) = flume::unbounded();
@@ -1202,7 +1202,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_malformed_tool_json_yields_empty_object() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
@@ -1228,7 +1228,7 @@ data: [DONE]\n";
     fn parse_sse_empty_name_in_subsequent_chunks_preserves_first_name() {
         // GLM-5.2 via Mistral sends the tool name in the first chunk and "" in
         // subsequent chunks. The accumulated name must not be overwritten.
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc_1\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}]}\n\
 \n\
@@ -1346,7 +1346,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_empty_stream() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "data: [DONE]\n";
             let (tx, _rx) = flume::unbounded();
             let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
@@ -1360,7 +1360,7 @@ data: [DONE]\n";
 
     #[test]
     fn parse_sse_content_as_array_with_thinking() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             // Test parsing content as an array with thinking blocks
             let sse = "\
 data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"Let me think\"}]}]}}]}\n\

@@ -917,7 +917,7 @@ mod tests {
         let lua = test_lua();
         set_buf_global(&lua);
 
-        smol::block_on(async {
+        maki_rt::block_on(async {
             lua.load(r#"buf:click({ row = 3 })"#)
                 .exec_async()
                 .await
@@ -963,7 +963,7 @@ mod tests {
             )
             .unwrap();
 
-        smol::block_on(async {
+        maki_rt::block_on(async {
             lua.load(r#"foreign:click({ row = 7 })"#)
                 .exec_async()
                 .await
@@ -981,7 +981,7 @@ mod tests {
         let lua = test_lua();
         set_buf_global(&lua);
 
-        smol::block_on(async {
+        maki_rt::block_on(async {
             lua.load(
                 r#"
                 buf:on("click", function() buf:set_lines({ { { "toggled" } } }) end)

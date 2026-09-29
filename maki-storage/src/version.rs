@@ -2,8 +2,8 @@ use std::io;
 use std::process::Command;
 use std::time::Duration;
 
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{AsyncReadResponseExt, ReadResponseExt, Request};
+use maki_http::config::VersionNegotiation;
+use maki_http::{AsyncReadResponseExt, ReadResponseExt, Request};
 
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const RELEASES_URL: &str = "https://api.github.com/repos/tontinton/maki/releases/latest";
@@ -13,9 +13,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, thiserror::Error)]
 pub enum VersionError {
     #[error("HTTP request failed: {0}")]
-    Http(#[from] isahc::Error),
+    Http(#[from] maki_http::Error),
     #[error("failed to build request: {0}")]
-    Request(#[from] isahc::http::Error),
+    Request(#[from] maki_http::http::Error),
     #[error("failed to read response: {0}")]
     Io(#[from] std::io::Error),
     #[error("server returned HTTP {0}")]
@@ -38,8 +38,8 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     matches!((parse(latest), parse(current)), (Some(l), Some(c)) if l > c)
 }
 
-fn client() -> Result<isahc::HttpClient, VersionError> {
-    Ok(isahc::HttpClient::builder()
+fn client() -> Result<maki_http::HttpClient, VersionError> {
+    Ok(maki_http::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         // curl carries http2 for OTLP.
@@ -47,7 +47,7 @@ fn client() -> Result<isahc::HttpClient, VersionError> {
         .build()?)
 }
 
-fn request() -> Result<isahc::Request<()>, VersionError> {
+fn request() -> Result<maki_http::Request<()>, VersionError> {
     Ok(Request::get(RELEASES_URL)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "maki")

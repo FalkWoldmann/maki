@@ -232,7 +232,7 @@ pub(crate) async fn stream_with_retry(
         let model = &fitted;
         let started = Instant::now();
         let (ptx, prx) = flume::unbounded();
-        let forwarder = smol::spawn({
+        let forwarder = maki_rt::spawn({
             let event_tx = event_tx.clone();
             async move { forward_provider_events(prx, &event_tx).await }
         });
@@ -324,7 +324,7 @@ pub(crate) async fn stream_with_retry(
                     delay_ms,
                 })?;
                 if !delay.is_zero() {
-                    let _ = cancel.race(smol::Timer::after(delay)).await;
+                    let _ = cancel.race(tokio::time::sleep(delay)).await;
                 }
             }
         }
@@ -701,7 +701,7 @@ mod tests {
     /// token before it polls at all.
     #[test]
     fn a_cancelled_run_is_never_billed_for_a_request() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = StrictServer {
                 window: STRICT_WINDOW,
                 requests: Mutex::default(),
@@ -746,7 +746,7 @@ mod tests {
         window: u32,
         expected: &[(u32, &str, u64)],
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = StrictServer {
                 window,
                 requests: Mutex::default(),
@@ -771,7 +771,7 @@ mod tests {
     // not fit comes back smaller, with nothing summarized away to get there.
     #[test_case(CROWDED_WINDOW, 2 ; "a_budget_that_does_not_fit_is_retried_smaller")]
     fn a_strict_server_is_answered_without_dropping_context(window: u32, attempts: usize) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = StrictServer {
                 window,
                 requests: Mutex::default(),
@@ -921,7 +921,7 @@ mod tests {
     /// never reached its other keys at all.
     #[test]
     fn a_fresh_key_is_tried_without_spending_the_retry_budget() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = PooledServer::new(FULL_POOL, RATE_LIMITED, Some(POOL_KEYS[FULL_POOL - 1]));
 
             send_pooled(&server)
@@ -945,7 +945,7 @@ mod tests {
     #[test_case(FORBIDDEN, FULL_POOL     ; "forbidden_walks_the_whole_pool")]
     #[test_case(UNAUTHORIZED, SINGLE_KEY ; "a_lone_key_is_tried_once")]
     fn a_spent_pool_is_walked_once_and_then_gives_up(status: u16, keys: usize) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let server = PooledServer::new(keys, status, None);
 
             let result = send_pooled(&server).await;

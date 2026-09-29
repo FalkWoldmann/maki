@@ -1,24 +1,24 @@
 //! Cooperative cancellation with parent-to-child propagation.
 //!
 //! `CancelTrigger` fires on Drop, so cleanup happens even if the trigger is forgotten.
-//! `cancelled()` uses a double-check around the listener to close the TOCTOU window between flag read and listener registration.
+//! `cancelled()` uses a double-check around the `Notified` future to close the TOCTOU window between flag read and registration.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use event_listener::Event;
+use tokio::sync::Notify;
 
 struct Shared {
     cancelled: AtomicBool,
-    event: Event,
+    event: Notify,
 }
 
 impl Shared {
     fn fire(&self) {
         self.cancelled.store(true, Ordering::Release);
-        self.event.notify(usize::MAX);
+        self.event.notify_waiters();
     }
 }
 
@@ -31,7 +31,7 @@ impl CancelToken {
     pub fn new() -> (CancelTrigger, Self) {
         let shared = Arc::new(Shared {
             cancelled: AtomicBool::new(false),
-            event: Event::new(),
+            event: Notify::new(),
         });
         (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
@@ -39,7 +39,7 @@ impl CancelToken {
     pub fn none() -> Self {
         Self(Arc::new(Shared {
             cancelled: AtomicBool::new(false),
-            event: Event::new(),
+            event: Notify::new(),
         }))
     }
 
@@ -51,7 +51,7 @@ impl CancelToken {
         if self.is_cancelled() {
             return Err("cancelled".into());
         }
-        futures_lite::future::race(async { Ok(future.await) }, async {
+        maki_rt::race(async { Ok(future.await) }, async {
             self.cancelled().await;
             Err("cancelled".into())
         })
@@ -63,11 +63,11 @@ impl CancelToken {
             if self.is_cancelled() {
                 return;
             }
-            let listener = self.0.event.listen();
+            let notified = self.0.event.notified();
             if self.is_cancelled() {
                 return;
             }
-            listener.await;
+            notified.await;
         }
     }
 
@@ -75,7 +75,7 @@ impl CancelToken {
         let (child_trigger, child_token) = Self::new();
         let parent = self.clone();
         let child_shared = Arc::clone(&child_token.0);
-        smol::spawn(async move {
+        maki_rt::spawn(async move {
             parent.cancelled().await;
             child_shared.fire();
         })
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn trigger_wakes_token() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, token) = CancelToken::new();
             assert!(!token.is_cancelled());
             trigger.cancel();
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn child_cancelled_by_parent() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (parent_trigger, parent_token) = CancelToken::new();
             let (_child_trigger, child_token) = parent_token.child();
             parent_trigger.cancel();
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn child_cancelled_by_own_trigger() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (_parent_trigger, parent_token) = CancelToken::new();
             let (child_trigger, child_token) = parent_token.child();
             child_trigger.cancel();
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn drop_trigger_also_cancels() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, token) = CancelToken::new();
             drop(trigger);
             token.cancelled().await;
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn race_returns_value_when_not_cancelled() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (_trigger, token) = CancelToken::new();
             let result = token.race(async { 42 }).await;
             assert_eq!(result.unwrap(), 42);
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn race_returns_error_when_already_cancelled() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, token) = CancelToken::new();
             trigger.cancel();
             let result = token.race(std::future::pending::<()>()).await;
@@ -267,9 +267,9 @@ mod tests {
 
     #[test]
     fn race_interrupted_by_concurrent_cancel() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, token) = CancelToken::new();
-            smol::spawn(async move { trigger.cancel() }).detach();
+            maki_rt::spawn(async move { trigger.cancel() }).detach();
             let result = token.race(std::future::pending::<()>()).await;
             assert!(result.is_err());
         });

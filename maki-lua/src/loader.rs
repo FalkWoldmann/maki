@@ -1248,7 +1248,7 @@ impl EventHandle {
     /// whole grace period.
     pub async fn end_session_async(&self, session: MakiId, reason: SessionEndReason) {
         let handle = self.clone();
-        smol::unblock(move || handle.end_sessions_blocking([session], reason)).await;
+        maki_rt::unblock(move || handle.end_sessions_blocking([session], reason)).await;
     }
 
     fn send_end_session(

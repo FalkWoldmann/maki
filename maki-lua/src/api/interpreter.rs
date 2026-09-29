@@ -1,5 +1,5 @@
 //! Runs Python in the monty sandbox with Lua fns as tools. Monty blocks on
-//! a `smol::unblock` thread. Stdout and tool-call batches share one FIFO
+//! a `maki_rt::unblock` thread. Stdout and tool-call batches share one FIFO
 //! channel so ordering is preserved and cancellation (dropped channel) makes
 //! the blocked thread unwind instead of leaking.
 
@@ -142,7 +142,7 @@ async fn interpreter_run(lua: Lua, code: String, opts: Table) -> LuaResult<Pair<
     let limits = runner::limits(timeout, max_memory_mb * 1024 * 1024);
 
     let (tx, rx) = flume::unbounded::<BridgeMsg>();
-    let run = smol::unblock(move || {
+    let run = maki_rt::unblock(move || {
         let tools: HashMap<String, ToolFn> = names
             .into_iter()
             .map(|name| {
@@ -236,7 +236,7 @@ async fn interpreter_run(lua: Lua, code: String, opts: Table) -> LuaResult<Pair<
 
     // A cancel comes back as a pair error, not a raise, so the caller can
     // still report the lines it streamed before the cut.
-    let (result, cb) = match cancel.race(futures_lite::future::zip(run, recv_loop)).await {
+    let (result, cb) = match cancel.race(async { tokio::join!(run, recv_loop) }).await {
         Ok(v) => v,
         Err(e) => return Ok((None, Some(e))),
     };

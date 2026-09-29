@@ -39,7 +39,7 @@ fn exec_tool(reg: &ToolRegistry, name: &str) -> String {
         .parse(&serde_json::json!({}))
         .expect("parse failed");
     let ctx = maki_agent::tools::test_support::stub_ctx(&maki_agent::AgentMode::Build);
-    let out = smol::block_on(async { inv.execute(&ctx).await })
+    let out = maki_rt::block_on(async { inv.execute(&ctx).await })
         .output
         .unwrap_or_else(|e| panic!("tool {name} failed: {e}"));
     match out {
@@ -406,13 +406,13 @@ fn fire_call(
 /// Bounded, so a seam that stops answering fails the test instead of hanging
 /// the suite.
 fn within<T>(work: impl Future<Output = T>) -> T {
-    smol::block_on(async {
+    maki_rt::block_on(async {
         let work = async { Some(work.await) };
         let give_up = async {
-            smol::Timer::after(DISPATCH_TIMEOUT).await;
+            tokio::time::sleep(DISPATCH_TIMEOUT).await;
             None
         };
-        smol::future::or(work, give_up).await.expect(NEVER_ANSWERED)
+        maki_rt::or(work, give_up).await.expect(NEVER_ANSWERED)
     })
 }
 

@@ -32,13 +32,13 @@ use maki_config::{MAX_SERVER_NAME_LEN, ModelPolicy, ProjectConfig, SessionDefaul
 use maki_providers::model::Model;
 use maki_providers::provider::{available_model_specs, fetch_all_models};
 use maki_providers::{add_cost, settle_session};
+use maki_rt::Task;
 use maki_storage::StateDir;
 use maki_storage::id::{MakiId, SessionRef};
 use maki_storage::sessions::{SessionClaim, SessionError};
 use serde::Serialize;
 use serde_json::Value;
-use smol::Task;
-use smol::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{debug, info, warn};
 
 use crate::{AcpParams, SessionEndHook, elicitation, methods, permissions, translate};
@@ -120,7 +120,7 @@ enum Incoming {
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (out_tx, out_rx) = flume::unbounded::<Value>();
 
-    let writer_task = smol::spawn(async move {
+    let writer_task = maki_rt::spawn(async move {
         let stdout = std::io::stdout();
         while let Ok(msg) = out_rx.recv_async().await {
             let mut handle = stdout.lock();
@@ -144,7 +144,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (in_tx, in_rx) = flume::unbounded::<Incoming>();
     // Weak, so a discovery still in flight cannot keep the loop alive once stdin closes.
     discover_models(Arc::clone(&params.model_policy), in_tx.downgrade());
-    let reader_task = smol::spawn(read_stdin(in_tx));
+    let reader_task = maki_rt::spawn(read_stdin(in_tx));
 
     while let Ok(incoming) = in_rx.recv_async().await {
         match incoming {
@@ -164,7 +164,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 /// Lives in its own task because `read_line` is not cancel safe: the main loop
 /// waits on discovery too, and a dropped read would eat half a line.
 async fn read_stdin(tx: Sender<Incoming>) -> std::io::Result<()> {
-    let mut reader = smol::io::BufReader::new(smol::Unblock::new(std::io::stdin()));
+    let mut reader = BufReader::new(tokio::io::stdin());
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).await? == 0 {
@@ -182,7 +182,7 @@ async fn read_stdin(tx: Sender<Incoming>) -> std::io::Result<()> {
 /// is a cold catalog download, and a provider the client could already pick from
 /// should not wait behind it.
 fn discover_models(policy: Arc<ModelPolicy>, tx: WeakSender<Incoming>) {
-    smol::spawn(async move {
+    maki_rt::spawn(async move {
         fetch_all_models(
             &policy,
             |batch| {
@@ -896,7 +896,7 @@ fn start_event_pump(
     project_trusted: bool,
     initial_cost: Option<f64>,
 ) -> Task<()> {
-    smol::spawn(async move {
+    maki_rt::spawn(async move {
         let sid = SessionId::from(session_id.to_string());
         let mut cost_total = initial_cost;
         // A permission request only carries scopes, which are matching keys and
@@ -1332,7 +1332,7 @@ mod tests {
                 ProjectConfig::for_project(Path::new("/project")),
                 Arc::default(),
             )),
-            task: smol::spawn(async {}),
+            task: maki_rt::spawn(async {}),
         };
         let server = Server {
             out_tx,
@@ -1397,7 +1397,7 @@ mod tests {
         let (mut srv, _answer_rx, _out_rx) = test_server();
         let running = srv.session.as_ref().unwrap().handle.session_id.clone();
 
-        let result = smol::block_on(load_session(
+        let result = maki_rt::block_on(load_session(
             &mut srv,
             &load_request(target),
             &acp_params(storage),
@@ -1478,7 +1478,7 @@ mod tests {
         let sender = guard.sender(0);
         feed(&sender);
         drop(guard);
-        smol::block_on(pump);
+        maki_rt::block_on(pump);
     }
 
     fn prompt_request(srv: &Server) -> Value {
@@ -1662,8 +1662,8 @@ mod tests {
         let session = srv.session.as_ref().expect("a session is installed");
         let (guard, _events) = maki_agent::event_stream();
         let event_tx = guard.sender(0);
-        let rx = async_lock::Mutex::new(answer_rx.clone());
-        smol::block_on(session.handle.permissions.enforce(
+        let rx = tokio::sync::Mutex::new(answer_rx.clone());
+        maki_rt::block_on(session.handle.permissions.enforce(
             &ToolKey::native(NEXT_TURN_TOOL),
             &PermissionScopes::single(NEXT_TURN_SCOPE.to_owned()),
             &event_tx,
@@ -1915,7 +1915,7 @@ mod tests {
             })
         }));
 
-        smol::block_on(close_session(&mut srv, SessionEndReason::Replaced));
+        maki_rt::block_on(close_session(&mut srv, SessionEndReason::Replaced));
 
         assert_eq!(
             ended_rx.try_recv().ok(),

@@ -91,7 +91,7 @@ async fn resize(
         return Ok(LuaImage(img));
     }
     let resized =
-        smol::unblock(move || img.resize(max_w, max_h, image::imageops::FilterType::Triangle))
+        maki_rt::unblock(move || img.resize(max_w, max_h, image::imageops::FilterType::Triangle))
             .await;
     Ok(LuaImage(Arc::new(resized)))
 }
@@ -121,7 +121,7 @@ async fn encode(
             )));
         }
     };
-    let encoded = smol::unblock(move || {
+    let encoded = maki_rt::unblock(move || {
         let mut out = Vec::new();
         img.write_to(&mut Cursor::new(&mut out), out_format)
             .map(|()| out)
@@ -175,7 +175,7 @@ fn probe(lua: &Lua, data: LuaValue) -> LuaResult<Pair<Table>> {
 #[lua_fn]
 async fn decode(lua: Lua, data: LuaValue) -> LuaResult<Pair<AnyUserData>> {
     let bytes = bytes_arg(&data, "image.decode")?;
-    let img = try_pair!(smol::unblock(move || decode_bytes(&bytes)).await);
+    let img = try_pair!(maki_rt::unblock(move || decode_bytes(&bytes)).await);
     Ok((Some(lua.create_userdata(LuaImage(Arc::new(img)))?), None))
 }
 

@@ -95,7 +95,7 @@ fn collect_dir_entries(
 }
 
 async fn read_file(path: PathBuf, max_bytes: u64) -> IoResult<Vec<u8>> {
-    smol::unblock(move || {
+    maki_rt::unblock(move || {
         let too_large = || {
             IoError::new(
                 ErrorKind::FileTooLarge,
@@ -175,7 +175,7 @@ async fn read_bytes(lua: Lua, path: String) -> LuaResult<Pair<Buffer>> {
 #[lua_fn(guard = FsRead)]
 async fn metadata(lua: Lua, path: String) -> LuaResult<Pair<Table>> {
     let abs = make_absolute(&path)?;
-    match smol::fs::metadata(&abs).await {
+    match tokio::fs::metadata(&abs).await {
         Ok(meta) => {
             let tbl = lua.create_table()?;
             tbl.set("size", meta.len())?;
@@ -324,7 +324,7 @@ async fn root(_lua: Lua, source: String, marker: Value) -> LuaResult<Option<Stri
         }
     };
 
-    smol::unblock(move || {
+    maki_rt::unblock(move || {
         let start = Path::new(&source);
         let start = if start.is_file() || !start.exists() {
             start.parent().unwrap_or(start)
@@ -412,7 +412,7 @@ async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<Pair<Tabl
         None => 1,
     };
 
-    let result = smol::unblock(move || -> Result<Vec<(String, &'static str)>, String> {
+    let result = maki_rt::unblock(move || -> Result<Vec<(String, &'static str)>, String> {
         if !abs.exists() {
             return Err(format!("dir: path does not exist: {}", abs.display()));
         }
@@ -449,7 +449,7 @@ async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<Pair<Tabl
 #[lua_fn(guard = FsWrite)]
 async fn write(_lua: Lua, path: String, content: String) -> LuaResult<Pair<bool>> {
     let abs = make_absolute(&path)?;
-    let result = smol::fs::write(&abs, content).await;
+    let result = tokio::fs::write(&abs, content).await;
     Ok(pair(touched(abs, result).await.map(|()| true)))
 }
 
@@ -466,9 +466,9 @@ async fn write(_lua: Lua, path: String, content: String) -> LuaResult<Pair<bool>
 async fn append(_lua: Lua, path: String, content: String) -> LuaResult<Pair<bool>> {
     let abs = make_absolute(&path)?;
     let appended = abs.clone();
-    // `smol::fs::File` writes through a background task and answers before
+    // `tokio::fs::File` writes through a background task and answers before
     // the bytes reach the file, so a plain `unblock` keeps append ordered.
-    let result = smol::unblock(move || {
+    let result = maki_rt::unblock(move || {
         use std::io::Write;
         std::fs::OpenOptions::new()
             .create(true)
@@ -494,7 +494,8 @@ async fn append(_lua: Lua, path: String, content: String) -> LuaResult<Pair<bool
 async fn atomic_write(_lua: Lua, path: String, content: String) -> LuaResult<Pair<bool>> {
     let abs = make_absolute(&path)?;
     let written = abs.clone();
-    let result = smol::unblock(move || maki_storage::atomic_write(&abs, content.as_bytes())).await;
+    let result =
+        maki_rt::unblock(move || maki_storage::atomic_write(&abs, content.as_bytes())).await;
     Ok(pair(touched(written, result).await.map(|()| true)))
 }
 
@@ -522,7 +523,7 @@ async fn rm(_lua: Lua, path: String, opts: Option<Table>) -> LuaResult<Pair<bool
         .and_then(|t| opt_bool(t, "force"))
         .unwrap_or(false);
     let removed = abs.clone();
-    let result = smol::unblock(move || -> std::io::Result<()> {
+    let result = maki_rt::unblock(move || -> std::io::Result<()> {
         let meta = match std::fs::symlink_metadata(&abs) {
             Ok(m) => m,
             Err(e) if force && e.kind() == ErrorKind::NotFound => return Ok(()),
@@ -562,9 +563,9 @@ async fn mkdir(_lua: Lua, path: String, opts: Option<Table>) -> LuaResult<Pair<b
         .and_then(|t| opt_bool(t, "parents"))
         .unwrap_or(false);
     let result = if parents {
-        smol::fs::create_dir_all(&abs).await
+        tokio::fs::create_dir_all(&abs).await
     } else {
-        smol::fs::create_dir(&abs).await
+        tokio::fs::create_dir(&abs).await
     };
     Ok(pair(touched(abs, result).await.map(|()| true)))
 }
@@ -639,7 +640,7 @@ fn descend(mut base: PathBuf, component: &Component<'_>) -> PathBuf {
 /// waits for a blocking thread the way the call it follows did.
 async fn touched<E>(path: PathBuf, result: Result<(), E>) -> Result<(), E> {
     if result.is_ok() {
-        smol::unblock(move || maki_agent::invalidate_for(&resolved(&path))).await;
+        maki_rt::unblock(move || maki_agent::invalidate_for(&resolved(&path))).await;
     }
     result
 }
@@ -687,7 +688,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<Pair<T
     let sort = opts.as_ref().and_then(|t| t.get::<String>("sort").ok());
     let sort_mtime = sort.as_deref() == Some("mtime");
 
-    let result: Result<Vec<String>, String> = smol::unblock(move || {
+    let result: Result<Vec<String>, String> = maki_rt::unblock(move || {
         let root = maki_agent::tools::resolve_search_path(path.as_deref())?;
         let pattern_refs: Vec<&str> = patterns.iter().map(|s| s.as_str()).collect();
 
@@ -775,7 +776,7 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<Pair<
         }
     }
 
-    let result = smol::unblock(move || maki_agent::tools::grep::grep_search(params)).await;
+    let result = maki_rt::unblock(move || maki_agent::tools::grep::grep_search(params)).await;
 
     let (base, entries) = try_pair!(result);
     let arr = lua.create_table()?;
@@ -1025,7 +1026,7 @@ async fn fuzzy_files(
     // Resolving the root stats the filesystem twice, so it waits for the
     // blocking thread with the ranking: on a network filesystem those two
     // syscalls per keystroke stall every other plugin on the Lua executor.
-    let answer = smol::unblock(move || -> RankedRoot {
+    let answer = maki_rt::unblock(move || -> RankedRoot {
         // `search_root` resolved this root to confine it, so the index is
         // keyed on that very path: resolving it again would be a second
         // answer, and a component swapped for a symlink between the two would
@@ -1108,6 +1109,7 @@ lua_table! {
 
 #[cfg(test)]
 mod tests {
+    use futures::FutureExt;
     use std::fs::OpenOptions;
     use std::time::{Duration, Instant, SystemTime};
 
@@ -1136,7 +1138,7 @@ mod tests {
         let tbl =
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let read: mlua::Function = tbl.get("read").unwrap();
-        let result: String = smol::block_on(read.call_async(file.to_str().unwrap())).unwrap();
+        let result: String = maki_rt::block_on(read.call_async(file.to_str().unwrap())).unwrap();
         assert_eq!(result, "world");
     }
 
@@ -1149,7 +1151,7 @@ mod tests {
         for func_name in ["read", "read_bytes"] {
             let f: mlua::Function = tbl.get(func_name).unwrap();
             let (val, err): (mlua::Value, mlua::Value) =
-                smol::block_on(f.call_async("/nonexistent/path")).unwrap();
+                maki_rt::block_on(f.call_async("/nonexistent/path")).unwrap();
             assert_eq!(val, mlua::Value::Nil, "{func_name} should return nil");
             assert!(
                 matches!(err, mlua::Value::String(_)),
@@ -1173,7 +1175,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let f: mlua::Function = tbl.get(func_name).unwrap();
         let (value, err): (Value, Option<String>) =
-            smol::block_on(f.call_async(path.to_str().unwrap())).unwrap();
+            maki_rt::block_on(f.call_async(path.to_str().unwrap())).unwrap();
         assert_eq!(value, Value::Nil);
         assert_eq!(err.as_deref(), Some(READ_LIMIT_ERROR));
     }
@@ -1186,7 +1188,7 @@ mod tests {
         let path = tmp.path().join("bounded");
         std::fs::write(&path, contents).unwrap();
 
-        let bytes = smol::block_on(read_file(path, TEST_READ_LIMIT)).unwrap();
+        let bytes = maki_rt::block_on(read_file(path, TEST_READ_LIMIT)).unwrap();
         assert_eq!(bytes, contents);
     }
 
@@ -1196,7 +1198,7 @@ mod tests {
         let path = PathBuf::from("/dev/zero");
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
 
-        let err = smol::block_on(read_file(path, TEST_READ_LIMIT)).unwrap_err();
+        let err = maki_rt::block_on(read_file(path, TEST_READ_LIMIT)).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::FileTooLarge);
     }
 
@@ -1212,7 +1214,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let f: mlua::Function = tbl.get("read_bytes").unwrap();
         let (buffer, err): (Buffer, Option<String>) =
-            smol::block_on(f.call_async(path.to_str().unwrap())).unwrap();
+            maki_rt::block_on(f.call_async(path.to_str().unwrap())).unwrap();
         assert_eq!(buffer.to_vec(), contents);
         assert_eq!(err, None);
     }
@@ -1227,7 +1229,7 @@ mod tests {
         let tbl =
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let f: mlua::Function = tbl.get("read").unwrap();
-        let err = smol::block_on(f.call_async::<Value>(path.to_str().unwrap())).unwrap_err();
+        let err = maki_rt::block_on(f.call_async::<Value>(path.to_str().unwrap())).unwrap_err();
         assert!(err.to_string().contains(NON_UTF8_ERROR));
     }
 
@@ -1242,7 +1244,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(dir.call_async::<(Table, mlua::Value)>(tmp.path().to_str().unwrap()))
+            maki_rt::block_on(dir.call_async::<(Table, mlua::Value)>(tmp.path().to_str().unwrap()))
                 .unwrap();
         assert!(matches!(err, mlua::Value::Nil), "dir should succeed");
 
@@ -1273,7 +1275,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("depth", 2).unwrap();
 
-        let (result, err): (Table, mlua::Value) = smol::block_on(
+        let (result, err): (Table, mlua::Value) = maki_rt::block_on(
             dir.call_async::<(Table, mlua::Value)>((tmp.path().to_str().unwrap(), opts)),
         )
         .unwrap();
@@ -1298,8 +1300,10 @@ mod tests {
         let dir: mlua::Function = tbl.get("dir").unwrap();
         let missing = tmp.path().join("does_not_exist");
         let (val, err): (mlua::Value, mlua::Value) =
-            smol::block_on(dir.call_async::<(mlua::Value, mlua::Value)>(missing.to_str().unwrap()))
-                .unwrap();
+            maki_rt::block_on(
+                dir.call_async::<(mlua::Value, mlua::Value)>(missing.to_str().unwrap()),
+            )
+            .unwrap();
         assert_eq!(
             val,
             mlua::Value::Nil,
@@ -1323,20 +1327,20 @@ mod tests {
         let metadata: mlua::Function = tbl.get("metadata").unwrap();
 
         let f: Table =
-            smol::block_on(metadata.call_async::<Table>(file.to_str().unwrap())).unwrap();
+            maki_rt::block_on(metadata.call_async::<Table>(file.to_str().unwrap())).unwrap();
         assert!(f.get::<bool>("is_file").unwrap());
         assert!(!f.get::<bool>("is_dir").unwrap());
         assert_eq!(f.get::<u64>("size").unwrap(), 5);
         assert!(f.get::<f64>("mtime").unwrap() > 0.0);
 
         let d: Table =
-            smol::block_on(metadata.call_async::<Table>(tmp.path().to_str().unwrap())).unwrap();
+            maki_rt::block_on(metadata.call_async::<Table>(tmp.path().to_str().unwrap())).unwrap();
         assert!(!d.get::<bool>("is_file").unwrap());
         assert!(d.get::<bool>("is_dir").unwrap());
 
         let missing = tmp.path().join("nope");
         let nil: mlua::Value =
-            smol::block_on(metadata.call_async(missing.to_str().unwrap())).unwrap();
+            maki_rt::block_on(metadata.call_async(missing.to_str().unwrap())).unwrap();
         assert!(matches!(nil, mlua::Value::Nil));
     }
 
@@ -1357,7 +1361,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("depth", 2u32).unwrap();
 
-        let (result, err): (Table, mlua::Value) = smol::block_on(
+        let (result, err): (Table, mlua::Value) = maki_rt::block_on(
             dir.call_async::<(Table, mlua::Value)>((tmp.path().to_str().unwrap(), opts)),
         )
         .unwrap();
@@ -1388,7 +1392,7 @@ mod tests {
         let dir: mlua::Function = tbl.get("dir").unwrap();
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(dir.call_async::<(Table, mlua::Value)>(tmp.path().to_str().unwrap()))
+            maki_rt::block_on(dir.call_async::<(Table, mlua::Value)>(tmp.path().to_str().unwrap()))
                 .unwrap();
         assert!(matches!(err, mlua::Value::Nil), "dir should succeed");
 
@@ -1421,7 +1425,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("depth", 10u32).unwrap();
 
-        let (result, err): (Table, mlua::Value) = smol::block_on(
+        let (result, err): (Table, mlua::Value) = maki_rt::block_on(
             dir.call_async::<(Table, mlua::Value)>((tmp.path().to_str().unwrap(), opts)),
         )
         .unwrap();
@@ -1445,12 +1449,12 @@ mod tests {
         let write: mlua::Function = tbl.get("write").unwrap();
 
         let (ok, err): (mlua::Value, mlua::Value) =
-            smol::block_on(write.call_async((file.to_str().unwrap(), "first"))).unwrap();
+            maki_rt::block_on(write.call_async((file.to_str().unwrap(), "first"))).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(matches!(err, mlua::Value::Nil));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "first");
 
-        smol::block_on(
+        maki_rt::block_on(
             write.call_async::<(mlua::Value, mlua::Value)>((file.to_str().unwrap(), "second")),
         )
         .unwrap();
@@ -1468,7 +1472,8 @@ mod tests {
 
         for content in [FIRST_CONTENT, REPLACEMENT_CONTENT] {
             let (ok, err): (Value, Value) =
-                smol::block_on(atomic_write.call_async((file.to_str().unwrap(), content))).unwrap();
+                maki_rt::block_on(atomic_write.call_async((file.to_str().unwrap(), content)))
+                    .unwrap();
             assert_eq!(ok, Value::Boolean(true));
             assert_eq!(err, Value::Nil);
             assert_eq!(std::fs::read_to_string(&file).unwrap(), content);
@@ -1485,7 +1490,7 @@ mod tests {
         let atomic_write: mlua::Function = table.get("atomic_write").unwrap();
 
         let (ok, err): (Value, Value) =
-            smol::block_on(atomic_write.call_async((file.to_str().unwrap(), FIRST_CONTENT)))
+            maki_rt::block_on(atomic_write.call_async((file.to_str().unwrap(), FIRST_CONTENT)))
                 .unwrap();
 
         assert_eq!(ok, Value::Nil);
@@ -1502,7 +1507,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::denied(), Arc::from(TEST_PLUGIN)).unwrap();
         let atomic_write: mlua::Function = table.get("atomic_write").unwrap();
 
-        let error = smol::block_on(
+        let error = maki_rt::block_on(
             atomic_write.call_async::<(Value, Value)>((file.to_str().unwrap(), FIRST_CONTENT)),
         )
         .unwrap_err();
@@ -1521,13 +1526,13 @@ mod tests {
         let append: mlua::Function = table.get("append").unwrap();
 
         let (ok, err): (Value, Value) =
-            smol::block_on(append.call_async((file.to_str().unwrap(), FIRST_CONTENT))).unwrap();
+            maki_rt::block_on(append.call_async((file.to_str().unwrap(), FIRST_CONTENT))).unwrap();
         assert_eq!(ok, Value::Boolean(true));
         assert_eq!(err, Value::Nil);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), FIRST_CONTENT);
 
         let (ok, err): (Value, Value) =
-            smol::block_on(append.call_async((file.to_str().unwrap(), REPLACEMENT_CONTENT)))
+            maki_rt::block_on(append.call_async((file.to_str().unwrap(), REPLACEMENT_CONTENT)))
                 .unwrap();
         assert_eq!(ok, Value::Boolean(true));
         assert_eq!(err, Value::Nil);
@@ -1547,7 +1552,7 @@ mod tests {
         let append: mlua::Function = table.get("append").unwrap();
 
         let (ok, err): (Value, Value) =
-            smol::block_on(append.call_async((file.to_str().unwrap(), FIRST_CONTENT))).unwrap();
+            maki_rt::block_on(append.call_async((file.to_str().unwrap(), FIRST_CONTENT))).unwrap();
 
         assert_eq!(ok, Value::Nil);
         assert!(matches!(err, Value::String(_)));
@@ -1563,7 +1568,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::denied(), Arc::from(TEST_PLUGIN)).unwrap();
         let append: mlua::Function = table.get("append").unwrap();
 
-        let error = smol::block_on(
+        let error = maki_rt::block_on(
             append.call_async::<(Value, Value)>((file.to_str().unwrap(), FIRST_CONTENT)),
         )
         .unwrap_err();
@@ -1583,7 +1588,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let rm: mlua::Function = tbl.get("rm").unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async(file.to_str().unwrap())).unwrap();
+            maki_rt::block_on(rm.call_async(file.to_str().unwrap())).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(!file.exists());
     }
@@ -1598,7 +1603,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let rm: mlua::Function = tbl.get("rm").unwrap();
         let (ok, err): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async(file.to_str().unwrap())).unwrap();
+            maki_rt::block_on(rm.call_async(file.to_str().unwrap())).unwrap();
         assert!(
             matches!(ok, mlua::Value::Nil),
             "should fail for nonexistent"
@@ -1618,7 +1623,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("force", true).unwrap();
         let (ok, err): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async((file.to_str().unwrap(), opts))).unwrap();
+            maki_rt::block_on(rm.call_async((file.to_str().unwrap(), opts))).unwrap();
         assert!(
             matches!(ok, mlua::Value::Boolean(true)),
             "force should suppress NotFound"
@@ -1639,7 +1644,7 @@ mod tests {
         opts.set("recursive", true).unwrap();
         opts.set("force", true).unwrap();
         let (ok, err): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async((dir.to_str().unwrap(), opts))).unwrap();
+            maki_rt::block_on(rm.call_async((dir.to_str().unwrap(), opts))).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(matches!(err, mlua::Value::Nil));
     }
@@ -1655,7 +1660,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let rm: mlua::Function = tbl.get("rm").unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async(dir.to_str().unwrap())).unwrap();
+            maki_rt::block_on(rm.call_async(dir.to_str().unwrap())).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(!dir.exists());
     }
@@ -1672,7 +1677,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let rm: mlua::Function = tbl.get("rm").unwrap();
         let (ok, err): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async(dir.to_str().unwrap())).unwrap();
+            maki_rt::block_on(rm.call_async(dir.to_str().unwrap())).unwrap();
         assert!(
             matches!(ok, mlua::Value::Nil),
             "should fail without recursive"
@@ -1697,7 +1702,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("recursive", true).unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async((dir.to_str().unwrap(), opts))).unwrap();
+            maki_rt::block_on(rm.call_async((dir.to_str().unwrap(), opts))).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(!dir.exists());
     }
@@ -1716,7 +1721,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let rm: mlua::Function = tbl.get("rm").unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async(link.to_str().unwrap())).unwrap();
+            maki_rt::block_on(rm.call_async(link.to_str().unwrap())).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(!link.exists(), "symlink should be removed");
         assert!(target.exists(), "target should remain");
@@ -1739,7 +1744,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("recursive", true).unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(rm.call_async((link.to_str().unwrap(), opts))).unwrap();
+            maki_rt::block_on(rm.call_async((link.to_str().unwrap(), opts))).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(!link.exists(), "symlink should be removed");
         assert!(real_dir.exists(), "target dir should remain");
@@ -1759,7 +1764,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let mkdir: mlua::Function = tbl.get("mkdir").unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(mkdir.call_async(dir.to_str().unwrap())).unwrap();
+            maki_rt::block_on(mkdir.call_async(dir.to_str().unwrap())).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(dir.is_dir());
     }
@@ -1774,7 +1779,7 @@ mod tests {
             create_fs_table(&lua, &PluginPermissions::trusted(), Arc::from(TEST_PLUGIN)).unwrap();
         let mkdir: mlua::Function = tbl.get("mkdir").unwrap();
         let (ok, err): (mlua::Value, mlua::Value) =
-            smol::block_on(mkdir.call_async(dir.to_str().unwrap())).unwrap();
+            maki_rt::block_on(mkdir.call_async(dir.to_str().unwrap())).unwrap();
         assert!(
             matches!(ok, mlua::Value::Nil),
             "should fail without parents option"
@@ -1794,7 +1799,7 @@ mod tests {
         let opts = lua.create_table().unwrap();
         opts.set("parents", true).unwrap();
         let (ok, _): (mlua::Value, mlua::Value) =
-            smol::block_on(mkdir.call_async((dir.to_str().unwrap(), opts))).unwrap();
+            maki_rt::block_on(mkdir.call_async((dir.to_str().unwrap(), opts))).unwrap();
         assert!(matches!(ok, mlua::Value::Boolean(true)));
         assert!(dir.is_dir());
     }
@@ -1815,7 +1820,7 @@ mod tests {
         opts.set("path", dir_str.as_str()).unwrap();
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
         assert!(matches!(err, mlua::Value::Nil));
 
         let mut paths: Vec<String> = Vec::new();
@@ -1828,7 +1833,7 @@ mod tests {
         let opts2 = lua.create_table().unwrap();
         opts2.set("path", dir_str.as_str()).unwrap();
         let (empty, err2): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.nope", opts2))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>(("*.nope", opts2))).unwrap();
         assert!(matches!(err2, mlua::Value::Nil));
         assert_eq!(empty.len().unwrap(), 0);
     }
@@ -1853,7 +1858,7 @@ mod tests {
         opts.set("path", tmp.path().to_str().unwrap()).unwrap();
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>((patterns, opts))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>((patterns, opts))).unwrap();
         assert!(matches!(err, mlua::Value::Nil));
 
         let mut paths: Vec<String> = Vec::new();
@@ -1883,7 +1888,7 @@ mod tests {
         opts.set("limit", 2).unwrap();
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
         assert!(matches!(err, mlua::Value::Nil));
         assert_eq!(result.len().unwrap(), 2);
     }
@@ -1911,7 +1916,7 @@ mod tests {
         }
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("**/*.log", opts))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>(("**/*.log", opts))).unwrap();
         assert!(matches!(err, mlua::Value::Nil));
         assert_eq!(result.len().unwrap(), expected_hits);
     }
@@ -1924,7 +1929,7 @@ mod tests {
         let glob: mlua::Function = tbl.get("glob").unwrap();
 
         let result =
-            smol::block_on(glob.call_async::<Table>((mlua::Value::Integer(42), mlua::Nil)));
+            maki_rt::block_on(glob.call_async::<Table>((mlua::Value::Integer(42), mlua::Nil)));
         assert!(result.is_err());
     }
 
@@ -1939,7 +1944,7 @@ mod tests {
         opts.set("path", "/tmp").unwrap();
 
         let (val, err): (mlua::Value, mlua::Value) =
-            smol::block_on(glob.call_async::<(mlua::Value, mlua::Value)>(("[invalid", opts)))
+            maki_rt::block_on(glob.call_async::<(mlua::Value, mlua::Value)>(("[invalid", opts)))
                 .unwrap();
         assert_eq!(val, mlua::Value::Nil);
         assert!(
@@ -1960,7 +1965,7 @@ mod tests {
         let dir: mlua::Function = tbl.get("dir").unwrap();
 
         let (val, err): (mlua::Value, mlua::Value) =
-            smol::block_on(dir.call_async::<(mlua::Value, mlua::Value)>(file.to_str().unwrap()))
+            maki_rt::block_on(dir.call_async::<(mlua::Value, mlua::Value)>(file.to_str().unwrap()))
                 .unwrap();
         assert_eq!(val, mlua::Value::Nil);
         assert!(
@@ -2002,7 +2007,7 @@ mod tests {
         opts.set("sort", "mtime").unwrap();
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
         assert!(matches!(err, mlua::Value::Nil));
 
         let first: String = result.get(1).unwrap();
@@ -2028,7 +2033,7 @@ mod tests {
         opts.set("path", sub.to_str().unwrap()).unwrap();
 
         let (result, err): (Table, mlua::Value) =
-            smol::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
+            maki_rt::block_on(glob.call_async::<(Table, mlua::Value)>(("*.rs", opts))).unwrap();
         assert!(matches!(err, mlua::Value::Nil));
 
         let mut paths: Vec<String> = Vec::new();
@@ -2041,7 +2046,7 @@ mod tests {
 
     fn grep_call(tbl: &Table, pattern: &str, opts: Table) -> (mlua::Value, mlua::Value) {
         let grep: mlua::Function = tbl.get("grep").unwrap();
-        smol::block_on(grep.call_async((pattern, opts))).unwrap()
+        maki_rt::block_on(grep.call_async((pattern, opts))).unwrap()
     }
 
     #[test]
@@ -2252,7 +2257,7 @@ mod tests {
     fn files_answer(tbl: &Table, opts: Table) -> Table {
         let f: mlua::Function = tbl.get("fuzzy_files").unwrap();
         let (found, err): (Option<Table>, Option<String>) =
-            smol::block_on(f.call_async(opts)).unwrap();
+            maki_rt::block_on(f.call_async(opts)).unwrap();
         assert_eq!(err, None, "the query must not have been superseded");
         found.unwrap()
     }
@@ -2299,7 +2304,7 @@ mod tests {
     }
 
     fn picker_call(lua: &Lua, tbl: &Table, opts: Table) -> Painted {
-        let drawn: Table = smol::block_on(lua.load(PICKER_LUA).call_async((tbl, opts))).unwrap();
+        let drawn: Table = maki_rt::block_on(lua.load(PICKER_LUA).call_async((tbl, opts))).unwrap();
         Painted {
             scanning: drawn.get("scanning").unwrap(),
             rows: drawn
@@ -2432,14 +2437,14 @@ mod tests {
         opts.set("path", tmp.path().to_str().unwrap()).unwrap();
         let f: mlua::Function = tbl.get("fuzzy_files").unwrap();
 
-        let (found, err): (Option<Table>, Option<String>) = smol::block_on(async {
+        let (found, err): (Option<Table>, Option<String>) = maki_rt::block_on(async {
             let mut call = Box::pin(f.call_async::<(Option<Table>, Option<String>)>(opts));
             // One poll runs the call up to its first await, which is where it
             // has taken its flag and handed the ranking to a blocking task.
             // Superseding it now is the flag landing while the answer it is
             // about to return is already built.
             assert!(
-                futures_lite::future::poll_once(&mut call).await.is_none(),
+                (&mut call).now_or_never().is_none(),
                 "the call is supposed to be waiting on its ranking here"
             );
             let overtaking = supersede(&plugin);
@@ -2777,7 +2782,7 @@ mod tests {
         let written: mlua::Function = tbl.get("write").unwrap();
         let made = tmp.path().join(NEW_FILE);
         let (ok, err): (Option<bool>, Option<String>) =
-            smol::block_on(written.call_async((made.to_str().unwrap(), ""))).unwrap();
+            maki_rt::block_on(written.call_async((made.to_str().unwrap(), ""))).unwrap();
         assert_eq!((ok, err), (Some(true), None));
 
         // The write left a mark on the index rather than a walk, and the

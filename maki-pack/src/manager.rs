@@ -798,7 +798,7 @@ mod tests {
         let spec = Spec::new("").with_name("");
         let mut lock = Lockfile::default();
 
-        let err = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let err = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect_err("a package with no name cannot be installed");
         assert!(matches!(err, ManagerError::UnsafeName { .. }), "got: {err}");
     }
@@ -810,7 +810,7 @@ mod tests {
         let spec = Spec::new("https://user:secret@example.com/repo");
         let mut lock = Lockfile::default();
 
-        let error = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let error = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect_err("credentials must not reach Git or the lockfile");
 
         assert!(matches!(error, ManagerError::UnsafeSource { .. }));
@@ -838,7 +838,7 @@ mod tests {
 
         assert!(
             matches!(
-                smol::block_on(mgr.ensure_installed(&spec, &mut lock)),
+                maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)),
                 Err(ManagerError::UnsafeName { .. })
             ),
             "{name:?} must not become a package directory"
@@ -858,7 +858,7 @@ mod tests {
         let mut lock = Lockfile::default();
         let spec = Spec::new("https://x/demo").with_name("../outside");
 
-        let _ = smol::block_on(mgr.ensure_installed(&spec, &mut lock));
+        let _ = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock));
         assert!(outside.is_dir(), "a refused name must not touch anything");
     }
 
@@ -872,7 +872,7 @@ mod tests {
             .with_name("demo")
             .with_version("--upload-pack=evil");
 
-        let err = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let err = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect_err("a revision starting with a dash must not reach git");
         assert!(
             matches!(err, ManagerError::UnsafeRevision { .. }),
@@ -890,7 +890,7 @@ mod tests {
         lock.record("demo", &src, "../invalid");
         let spec = Spec::new(src).with_name("demo");
 
-        let err = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let err = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect_err("an invalid lock revision must not resolve a replacement");
 
         assert!(matches!(err, ManagerError::UnsafeRevision { .. }));
@@ -924,7 +924,7 @@ mod tests {
         fs::create_dir_all(paths::revision_dir(dir.path(), "demo", TEST_REV)).unwrap();
 
         let spec = Spec::new("https://x/demo").with_name("demo");
-        let installed = smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        let installed = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
         assert!(!installed.changed);
         assert_eq!(installed.rev, TEST_REV);
     }
@@ -941,7 +941,7 @@ mod tests {
         fs::write(repo.join("plugin").join("init.lua"), "-- demo\n").unwrap();
 
         let run = |args: Vec<&str>| {
-            smol::block_on(git::run(
+            maki_rt::block_on(git::run(
                 args.iter().map(|a| (*a).to_owned()).collect(),
                 repo.clone(),
             ))
@@ -966,12 +966,12 @@ mod tests {
     fn commit_changes(origin: &Path, message: &str) {
         for args in [vec!["add", "."], vec!["commit", "--quiet", "-m", message]] {
             let args = args.into_iter().map(str::to_owned).collect();
-            smol::block_on(git::run(args, origin.to_path_buf())).unwrap();
+            maki_rt::block_on(git::run(args, origin.to_path_buf())).unwrap();
         }
     }
 
     fn fixture_git(origin: &Path, args: &[&str]) -> git::GitOutput {
-        smol::block_on(git::run(
+        maki_rt::block_on(git::run(
             args.iter().map(|arg| (*arg).to_owned()).collect(),
             origin.to_path_buf(),
         ))
@@ -1005,18 +1005,18 @@ mod tests {
         }
 
         fn install(&mut self) -> Installed {
-            smol::block_on(self.manager.ensure_installed(&self.spec, &mut self.lock)).unwrap()
+            maki_rt::block_on(self.manager.ensure_installed(&self.spec, &mut self.lock)).unwrap()
         }
 
         fn prepare(&self, restore_lockfile: bool) -> Result<PreparedUpdate, ManagerError> {
-            smol::block_on(
+            maki_rt::block_on(
                 self.manager
                     .prepare_update(&self.spec, &self.lock, restore_lockfile),
             )
         }
 
         fn apply(&mut self, prepared: &PreparedUpdate) -> Result<Installed, ManagerError> {
-            smol::block_on(self.manager.apply_update(prepared, &mut self.lock))
+            maki_rt::block_on(self.manager.apply_update(prepared, &mut self.lock))
         }
 
         fn revision_dir(&self, revision: &str) -> PathBuf {
@@ -1033,7 +1033,7 @@ mod tests {
         let mut lock = Lockfile::default();
         let spec = Spec::new(origin.display().to_string()).with_name("demo");
 
-        let installed = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let installed = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect("a local repository should install");
 
         assert!(installed.changed);
@@ -1067,8 +1067,8 @@ mod tests {
         let mut lock = Lockfile::default();
         let spec = Spec::new(origin.display().to_string()).with_name("demo");
 
-        let first = smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
-        let second = smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        let first = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        let second = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
 
         assert!(!second.changed, "the second call changes nothing");
         assert_eq!(first.dir, second.dir);
@@ -1088,7 +1088,7 @@ mod tests {
             .with_name("demo")
             .with_version("v1.0.0");
 
-        smol::block_on(mgr.ensure_installed(&spec, &mut lock)).expect("a tag should install");
+        maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).expect("a tag should install");
     }
 
     /// An annotated tag is its own object. Recording that object id would put
@@ -1115,7 +1115,7 @@ mod tests {
             .with_name("demo")
             .with_version("v2.0.0");
 
-        let installed = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let installed = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect("an annotated tag should install");
         assert_eq!(installed.rev, commit);
     }
@@ -1133,7 +1133,7 @@ mod tests {
         let mgr = Manager::new(&first_site);
         let mut lock = Lockfile::default();
         let spec = Spec::new(src.clone()).with_name("demo");
-        let first = smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        let first = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
 
         // A later commit lands upstream, so `version` would now resolve higher.
         fs::write(origin.join("plugin").join("extra.lua"), "-- later\n").unwrap();
@@ -1142,7 +1142,7 @@ mod tests {
         // Machine two starts empty but carries the committed lockfile.
         let second_site = dir.path().join("site-two");
         let mgr2 = Manager::new(&second_site);
-        let second = smol::block_on(mgr2.ensure_installed(&spec, &mut lock)).unwrap();
+        let second = maki_rt::block_on(mgr2.ensure_installed(&spec, &mut lock)).unwrap();
 
         assert_eq!(
             second.rev, first.rev,
@@ -1162,7 +1162,7 @@ mod tests {
         let dir = site();
         let origin = origin_repo(dir.path(), None);
         let git = |args: Vec<&str>| {
-            smol::block_on(git::run(
+            maki_rt::block_on(git::run(
                 args.iter().map(|a| (*a).to_owned()).collect(),
                 origin.clone(),
             ))
@@ -1172,7 +1172,7 @@ mod tests {
         let mgr = Manager::new(dir.path().join("site"));
         let mut lock = Lockfile::default();
         let spec = Spec::new(origin.display().to_string()).with_name("demo");
-        let first = smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        let first = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
 
         fs::write(origin.join("plugin").join("extra.lua"), "-- later\n").unwrap();
         git(vec!["add", "."]);
@@ -1180,7 +1180,7 @@ mod tests {
         git(vec!["tag", "v3.0.0"]);
 
         let mut lock = Lockfile::default();
-        let updated = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let updated = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect("the default branch should resolve to the new commit");
         assert_ne!(
             updated.rev, first.rev,
@@ -1190,7 +1190,7 @@ mod tests {
 
         let mut lock = Lockfile::default();
         let tagged = spec.clone().with_version("v3.0.0");
-        smol::block_on(mgr.ensure_installed(&tagged, &mut lock))
+        maki_rt::block_on(mgr.ensure_installed(&tagged, &mut lock))
             .expect("a tag pushed after the clone should resolve");
     }
 
@@ -1208,7 +1208,7 @@ mod tests {
         let mut lock = Lockfile::default();
         let spec = Spec::new(origin.display().to_string()).with_name("demo");
 
-        smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect("a leftover working copy should be replaced, not fatal");
     }
 
@@ -1224,7 +1224,7 @@ mod tests {
         lock.record("demo", "https://elsewhere/other", OTHER_REV);
 
         let spec = Spec::new(origin.display().to_string()).with_name("demo");
-        let installed = smol::block_on(mgr.ensure_installed(&spec, &mut lock))
+        let installed = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock))
             .expect("a new source should resolve afresh");
         assert_ne!(installed.rev, OTHER_REV);
         assert_eq!(lock.get("demo").unwrap().src, spec.src);
@@ -1243,7 +1243,7 @@ mod tests {
         let mut lock = Lockfile::default();
 
         let spec = Spec::new(first.display().to_string()).with_name("demo");
-        smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
 
         // A second, genuinely different repository under the same name.
         let second_root = dir.path().join("second");
@@ -1253,7 +1253,7 @@ mod tests {
         commit_changes(&second, "second");
 
         let respec = Spec::new(second.display().to_string()).with_name("demo");
-        let installed = smol::block_on(mgr.ensure_installed(&respec, &mut lock))
+        let installed = maki_rt::block_on(mgr.ensure_installed(&respec, &mut lock))
             .expect("a new source should install");
 
         assert!(
@@ -1273,12 +1273,12 @@ mod tests {
         let mgr = Manager::new(dir.path().join("site"));
         let mut lock = Lockfile::default();
         let spec = Spec::new(origin.display().to_string()).with_name("demo");
-        let first = smol::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
+        let first = maki_rt::block_on(mgr.ensure_installed(&spec, &mut lock)).unwrap();
 
         let pinned = Spec::new(origin.display().to_string())
             .with_name("demo")
             .with_version("v1.2.0");
-        let second = smol::block_on(mgr.ensure_installed(&pinned, &mut lock)).unwrap();
+        let second = maki_rt::block_on(mgr.ensure_installed(&pinned, &mut lock)).unwrap();
 
         assert_eq!(second.rev, first.rev, "the recorded revision must win");
         assert!(!second.changed);
@@ -1589,7 +1589,7 @@ mod tests {
 
         for mut moved in [changed_source, changed_revision] {
             assert!(matches!(
-                smol::block_on(fixture.manager.apply_update(&prepared, &mut moved)),
+                maki_rt::block_on(fixture.manager.apply_update(&prepared, &mut moved)),
                 Err(ManagerError::ConcurrentChange { .. })
             ));
         }

@@ -623,7 +623,7 @@ struct DynamicProvider {
 /// `'static` per-slug metadata rather than the provider.
 #[derive(Default)]
 struct RefreshGate {
-    lock: smol::lock::Mutex<()>,
+    lock: tokio::sync::Mutex<()>,
     winner: Mutex<Winner>,
 }
 
@@ -671,7 +671,7 @@ async fn run_auth_script(
     let script_path = script_path.to_path_buf();
     let auth = auth.clone();
     let slug = slug.to_string();
-    smol::unblock(move || {
+    maki_rt::unblock(move || {
         // `reload` only re-reads what a login wrote, so it spends no token and
         // must not park the ui behind someone else's refresh.
         let _lock = (subcommand != RELOAD_SUBCOMMAND).then(|| lock_exclusive(&script_path));
@@ -728,7 +728,7 @@ impl Provider for DynamicProvider {
                 }
                 forwarded
             };
-            let (result, forwarded) = futures_lite::future::zip(attempt, forward).await;
+            let (result, forwarded) = tokio::join!(attempt, forward);
             match result {
                 // The script mints credentials without the user, so an expired
                 // token costs one silent refresh instead of a re-login prompt.
@@ -1031,12 +1031,11 @@ esac
         let (first, second) = (stale(), stale());
         let gate = RefreshGate::default();
 
-        smol::block_on(async {
-            let (a, b) = futures_lite::future::zip(
+        maki_rt::block_on(async {
+            let (a, b) = tokio::join!(
                 gate.refresh(TEST_SLUG, &script, &first),
                 gate.refresh(TEST_SLUG, &script, &second),
-            )
-            .await;
+            );
             a.unwrap();
             b.unwrap();
 

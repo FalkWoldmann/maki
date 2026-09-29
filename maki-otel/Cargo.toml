@@ -4,12 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+maki-rt = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
 maki-config = { workspace = true }
-isahc = { workspace = true }
+maki-http = { workspace = true }
 serde_json = { workspace = true }
-smol = { workspace = true }
 flume = { workspace = true }
-futures-lite = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 flate2 = { workspace = true }

@@ -581,13 +581,13 @@ impl McpHandle {
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = flume::bounded(1);
         self.send(McpCommand::Shutdown { ack: ack_tx });
-        let finished = futures_lite::future::or(
+        let finished = maki_rt::or(
             async {
                 let _ = ack_rx.recv_async().await;
                 true
             },
             async {
-                smol::Timer::after(MCP_SHUTDOWN_TIMEOUT).await;
+                tokio::time::sleep(MCP_SHUTDOWN_TIMEOUT).await;
                 false
             },
         )
@@ -619,7 +619,7 @@ pub async fn start(
 ) -> (Option<McpHandle>, McpConfigErrors) {
     tracing::info!(cwd = %cwd.display(), "starting MCP");
     let cwd = cwd.to_owned();
-    let (config, config_errors) = smol::unblock(move || load_config(&cwd, project_config)).await;
+    let (config, config_errors) = maki_rt::unblock(move || load_config(&cwd, project_config)).await;
     (start_with_config(config), config_errors)
 }
 
@@ -645,7 +645,7 @@ pub async fn start_with_extra(
 ) -> (Option<McpHandle>, McpConfigErrors) {
     let owned_cwd = cwd.to_owned();
     let (mut config, config_errors) =
-        smol::unblock(move || load_config(&owned_cwd, project_config)).await;
+        maki_rt::unblock(move || load_config(&owned_cwd, project_config)).await;
     for (name, transport) in extra {
         match config.mcp.entry(name) {
             Entry::Vacant(slot) => {
@@ -684,7 +684,7 @@ pub fn start_with_config(config: McpConfig) -> Option<McpHandle> {
 
     info!(total = inner.entries.len(), "MCP servers connecting");
 
-    smol::spawn(run(inner, index, snapshot, cmd_rx, ready_tx)).detach();
+    maki_rt::spawn(run(inner, index, snapshot, cmd_rx, ready_tx)).detach();
     Some(handle)
 }
 
@@ -713,12 +713,12 @@ async fn run(
     let mut ack: Option<flume::Sender<()>> = None;
     loop {
         release_ready(&inner, &mut ready);
-        let step = futures_lite::future::or(
+        let step = maki_rt::or(
             async {
                 match connected_rx.recv_async().await {
                     Ok((i, result)) => Step::Connected(i, result),
                     // Every connect landed, so only commands wake us now.
-                    Err(_) => futures_lite::future::pending().await,
+                    Err(_) => std::future::pending().await,
                 }
             },
             async {
@@ -989,7 +989,7 @@ fn parse_entries(config: McpConfig) -> McpManagerInner {
 fn spawn_connects(
     inner: &McpManagerInner,
     tx: flume::Sender<(usize, Result<StartResult, McpError>)>,
-) -> Vec<smol::Task<()>> {
+) -> Vec<maki_rt::Task<()>> {
     inner
         .entries
         .iter()
@@ -998,7 +998,7 @@ fn spawn_connects(
         .filter_map(|(i, e)| e.config.clone().map(|c| (i, c)))
         .map(|(i, config)| {
             let tx = tx.clone();
-            smol::spawn(async move {
+            maki_rt::spawn(async move {
                 let _ = tx.send_async((i, start_server(&config).await)).await;
             })
         })
@@ -1272,8 +1272,9 @@ fn tool_search_definition(deferred: &[&ToolDescriptor]) -> Value {
 
 fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
     let log_name = name.clone();
-    smol::spawn(async move {
-        if let Err(e) = smol::unblock(move || config::persist_enabled(&path, &name, enabled)).await
+    maki_rt::spawn(async move {
+        if let Err(e) =
+            maki_rt::unblock(move || config::persist_enabled(&path, &name, enabled)).await
         {
             warn!(error = %e, server = %log_name, "failed to persist MCP toggle");
         }
@@ -1310,13 +1311,13 @@ fn intern(name: String) -> Arc<str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_lock::Mutex as AsyncMutex;
     use config::{RawHttpFields, RawServerConfig, RawStdioFields, RawTransport};
     use maki_providers::Role;
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[cfg(unix)]
     use std::time::Instant;
     use test_case::test_case;
+    use tokio::sync::Mutex as AsyncMutex;
 
     const DEFAULT_TIMEOUT_MS: u64 = 30_000;
     const MISSING_PROGRAM: &str = "/nonexistent/definitely-not-here";
@@ -1849,7 +1850,7 @@ mod tests {
     /// typed during startup must not ship before the servers settle.
     #[test]
     fn ready_settles_every_server_status() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             assert!(start_with_config(McpConfig::default()).is_none());
 
             let mut disabled = stdio_raw(&["unused-disabled-cmd"]);
@@ -1884,7 +1885,7 @@ mod tests {
     #[test]
     fn shutdown_preempts_an_in_flight_connect() {
         const BLOCKED: &str = "shutdown must not wait for an in-flight connect";
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let config = make_config(vec![("slow-srv", stdio_raw(&["sleep", "60"]))]);
             let handle = start_with_config(config).unwrap();
             let started = Instant::now();
@@ -1897,7 +1898,7 @@ mod tests {
     /// handed to the model on the next turn and then try to call into a dead transport.
     #[test]
     fn failed_refresh_clears_entry() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let t = FakeTransport::new();
             let (mut inner, _) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
             inner.entries[0].config = Some(bad_stdio_config("srv"));
@@ -1915,7 +1916,7 @@ mod tests {
 
     #[test]
     fn disable_purges_entry_and_published_view() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let t = FakeTransport::new();
             let (mut inner, handle) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
 
@@ -1945,7 +1946,7 @@ mod tests {
     /// waits for that signal, then calls `publish` while the call is still parked on `call_gate`.
     #[test]
     fn slow_tool_call_does_not_block_publish() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let t = FakeTransport::new();
             let (mut inner, handle) = setup(vec![fake_entry("srv", Arc::clone(&t) as _)]);
 
@@ -1953,7 +1954,9 @@ mod tests {
             let entered = t.call_entered_rx.clone();
             let call_handle = {
                 let handle = handle.clone();
-                smol::spawn(async move { handle.call_tool(TOOL_NAME, &json!({})).await.unwrap() })
+                maki_rt::spawn(
+                    async move { handle.call_tool(TOOL_NAME, &json!({})).await.unwrap() },
+                )
             };
 
             entered.recv_async().await.unwrap();
@@ -1968,7 +1971,7 @@ mod tests {
 
     #[test]
     fn shutdown_command_drains_and_acks() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (t1, t2) = (FakeTransport::new(), FakeTransport::new());
             let inner = McpManagerInner {
                 entries: vec![
@@ -1980,7 +1983,7 @@ mod tests {
             let index = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
             let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
             let (cmd_tx, cmd_rx) = flume::unbounded();
-            let loop_task = smol::spawn(run(
+            let loop_task = maki_rt::spawn(run(
                 inner,
                 Arc::clone(&index),
                 Arc::clone(&snapshot),

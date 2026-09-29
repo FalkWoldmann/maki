@@ -4,9 +4,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
-use isahc::{HttpClient, Request};
+use maki_http::{HttpClient, Request};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tracing::{debug, warn};
 
 use crate::model::Model;
@@ -611,8 +611,8 @@ fn parse_usage(u: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::io::Cursor;
     use serde_json::json;
+    use std::io::Cursor;
     use test_case::test_case;
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn parse_sse_text_and_usage() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_text.delta\n\
 data: {\"delta\":\"Hello\"}\n\
@@ -699,7 +699,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn parse_sse_tool_calls() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\"}}\n\
@@ -751,7 +751,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         status: u16,
         retryable: bool,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let data = json!({
                 "type": "error",
                 "error": { "type": error_type, "code": code, "message": message },
@@ -767,7 +767,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test_case("rate_limit_exceeded", RATE_LIMIT_MESSAGE, 429 ; "rate_limit")]
     #[test_case("server_is_overloaded", OVERLOAD_MESSAGE, 529  ; "overload")]
     fn parse_sse_response_failed(code: &str, message: &str, status: u16) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let data = json!({
                 "response": { "error": { "code": code, "message": message } },
             });
@@ -781,7 +781,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_incomplete_response() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_text.delta\n\
 data: {\"delta\":\"partial\"}\n\
@@ -848,7 +848,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
 
     #[test]
     fn parse_sse_reasoning_text_delta() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"content\":[],\"encrypted_content\":\"\",\"status\":\"in_progress\"}}\n\
@@ -906,7 +906,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn parse_sse_reasoning_summary_text_delta() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.reasoning_summary_text.delta\n\
 data: {\"delta\":\"Summary part\"}\n\
@@ -938,7 +938,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
     #[test]
     fn parse_sse_reasoning_only_no_text() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.reasoning_text.delta\n\
 data: {\"delta\":\"Thinking only\"}\n\
@@ -960,7 +960,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
     #[test]
     fn parse_sse_malformed_tool_json_yields_empty_object() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\"}}\n\
@@ -986,7 +986,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"ou
 
     #[test]
     fn parse_sse_tool_call_without_output_index() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\"}}\n\
@@ -1012,7 +1012,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_sequential_tool_calls_without_output_index() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             // Simulates llama.cpp streaming two sequential tool calls without output_index
             let sse = "\
 event: response.output_item.added\n\
@@ -1051,7 +1051,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_tool_done_without_output_index_updates_last_acc() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             // done event without output_index should update the last accumulator
             let sse = "\
 event: response.output_item.added\n\
@@ -1080,7 +1080,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_prompt_progress_events() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.in_progress\n\
 data: {\"prompt_progress\":{\"processed\":100,\"total\":1000,\"cache\":50}}\n\
@@ -1114,7 +1114,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
     #[test]
     fn parse_sse_done_arguments_as_json_object() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\"}}\n\
@@ -1139,7 +1139,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_reasoning_summary_part_added() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.reasoning_summary_part.added\n\
 data: {\"id\":\"sp_1\"}\n\
@@ -1171,7 +1171,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
     #[test]
     fn parse_sse_delta_arguments_as_json_object() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"grep\"}}\n\
@@ -1197,7 +1197,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_done_object_args_overrides_empty_delta() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"edit\"}}\n\
@@ -1224,7 +1224,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn parse_sse_no_reasoning_tokens_in_usage() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let sse = "\
 event: response.output_text.delta\n\
 data: {\"delta\":\"Hello\"}\n\

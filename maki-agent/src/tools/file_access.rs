@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::SystemTime;
 
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tracing::{debug, warn};
 
 const STALE_READ_MSG: &str = "file changed since last read";
@@ -29,15 +30,15 @@ impl FileKey {
     }
 }
 
-type FileLock = Arc<async_lock::Mutex<()>>;
-pub type FileGuard = async_lock::MutexGuardArc<()>;
+type FileLock = Arc<AsyncMutex<()>>;
+pub type FileGuard = OwnedMutexGuard<()>;
 
 /// Who read what and when, plus the per-file write locks that make one tool's
 /// read-modify-write safe against another's.
 #[derive(Default)]
 pub struct FileAccess {
     mtimes: Mutex<HashMap<FileKey, SystemTime>>,
-    locks: Mutex<HashMap<FileKey, Weak<async_lock::Mutex<()>>>>,
+    locks: Mutex<HashMap<FileKey, Weak<AsyncMutex<()>>>>,
 }
 
 fn get_mtime(path: &Path) -> Option<SystemTime> {
@@ -64,11 +65,11 @@ impl FileAccess {
     /// acquire order to avoid lock-order inversion, and none exists yet.
     pub async fn acquire(&self, key: &FileKey) -> FileGuard {
         let lock = self.lock_for(key);
-        match lock.try_lock_arc() {
-            Some(guard) => guard,
-            None => {
+        match Arc::clone(&lock).try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => {
                 debug!(path = %key.as_path().display(), "waiting for the file lock");
-                lock.lock_arc().await
+                lock.lock_owned().await
             }
         }
     }
@@ -126,7 +127,7 @@ impl FileAccess {
 mod tests {
     use std::time::Duration;
 
-    use futures_lite::future::poll_once;
+    use futures::FutureExt;
     use test_case::test_case;
 
     use super::*;
@@ -192,18 +193,18 @@ mod tests {
         let other = FileKey::new(&dir.path().join("other.rs"));
 
         let access = FileAccess::default();
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let held = access.acquire(&path).await;
             assert!(
-                poll_once(access.acquire(&path)).await.is_none(),
+                access.acquire(&path).now_or_never().is_none(),
                 "the same file must not be lockable twice"
             );
             assert!(
-                poll_once(access.acquire(&other)).await.is_some(),
+                access.acquire(&other).now_or_never().is_some(),
                 "another file must not wait on this one"
             );
             drop(held);
-            assert!(poll_once(access.acquire(&path)).await.is_some());
+            assert!(access.acquire(&path).now_or_never().is_some());
         });
     }
 
@@ -211,7 +212,7 @@ mod tests {
     fn dead_locks_do_not_accumulate() {
         let dir = tempfile::TempDir::new().unwrap();
         let access = FileAccess::default();
-        smol::block_on(async {
+        maki_rt::block_on(async {
             for i in 0..=LOCK_PRUNE_AT {
                 let key = FileKey::new(&dir.path().join(format!("{i}.rs")));
                 drop(access.acquire(&key).await);

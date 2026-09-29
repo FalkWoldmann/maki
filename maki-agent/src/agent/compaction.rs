@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn compact_replaces_history_with_summary() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![
                 Message::user("first".into()),
@@ -814,7 +814,7 @@ mod tests {
     /// that no longer exists.
     #[test]
     fn compact_leaves_the_gauge_describing_the_summary() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(StreamResponse {
                 usage: TokenUsage {
                     input: SUMMARISED_PROMPT,
@@ -849,7 +849,7 @@ mod tests {
     /// and silences the threshold that would have tried again.
     #[test]
     fn a_failed_compaction_leaves_the_gauge_alone() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(StreamResponse {
                 message: Message {
                     role: Role::Assistant,
@@ -887,7 +887,7 @@ mod tests {
     #[test_case(vec![] ; "no_content")]
     #[test_case(vec![ContentBlock::Text { text: " \n".into() }] ; "blank_text")]
     fn compact_keeps_history_when_summary_has_no_text(content: Vec<ContentBlock>) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(StreamResponse {
                 message: Message {
                     role: Role::Assistant,
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn compact_reports_a_cancel_as_an_ending_not_a_failure() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![Message::user(KEPT_TEXT.into())]);
             let (trigger, cancel) = CancelToken::new();
@@ -953,7 +953,7 @@ mod tests {
     /// wiring around it.
     #[test]
     fn compact_sends_instructions_and_appends_post() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![Message::user("work".into())]);
             let config = AgentConfig {
@@ -1029,7 +1029,7 @@ mod tests {
     /// The mock holds no responses, so any request would panic.
     #[test]
     fn manual_compact_skipped_by_layer_ends_without_a_request() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(Vec::new());
             let mut history = History::new(vec![Message::user(KEPT_TEXT.into())]);
 
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[test]
     fn layer_instructions_follow_the_requests_own() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![Message::user("work".into())]);
 
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn manual_compact_reports_the_summary() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(StreamResponse {
                 message: Message {
                     role: Role::Assistant,
@@ -1158,7 +1158,7 @@ mod tests {
 
         use maki_providers::{ImageMediaType, ImageSource};
 
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let image = ContentBlock::Image {
                 source: ImageSource::new(ImageMediaType::Png, Arc::from("aGVsbG8=")),
@@ -1326,7 +1326,7 @@ mod tests {
     /// rather than trusted.
     #[test]
     fn prepare_layer_picks_what_collapses() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             const TOOL: &str = "read";
             const OUT_OF_RANGE: usize = 99;
             let mut messages = vec![
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn compact_history_retries_without_reproduced_orphan() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             const TOOL_USE_ID: &str = "call_dMZDTpEfz2JxMvFbqFHua1Zy";
 
             let provider = MockProvider::new(vec![
@@ -1466,7 +1466,7 @@ mod tests {
 
     #[test]
     fn compact_history_prunes_when_there_is_nothing_to_collapse() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![
                 Err(overflow_error()),
                 Ok(text_response(StopReason::EndTurn)),
@@ -1486,7 +1486,7 @@ mod tests {
     /// summariser must ride the conversation's id like every other turn.
     #[test]
     fn compact_history_sends_the_conversations_session_id() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![Message::user("work".into())]);
             let session = SessionRef::generate();
@@ -1503,7 +1503,7 @@ mod tests {
 
     #[test]
     fn compact_history_carries_the_tail_past_the_summary() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![
                 Message::user("first".into()),
@@ -1527,7 +1527,7 @@ mod tests {
 
     #[test]
     fn compaction_keeps_observation_before_dependent_reply() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
             let mut history = History::new(vec![
                 Message::observation("[monitor] build failed".into()),

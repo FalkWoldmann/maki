@@ -260,13 +260,12 @@ impl Provider for Requesty {
             let auth = self.auth.lock().unwrap().clone();
             // Both listings at once: the picker only shows up once the slowest
             // provider answers, so back to back round trips here cost everyone.
-            let (managed, catalog) = futures_lite::future::zip(
+            let (managed, catalog) = tokio::join!(
                 self.compat
                     .fetch_and_parse_models(&auth, MANAGED_MODELS_PATH, parse_model),
                 self.compat
                     .fetch_and_parse_models(&auth, MODELS_PATH, parse_model),
-            )
-            .await;
+            );
             match (managed, catalog) {
                 (Ok(managed), Ok(catalog)) => Ok(merge_models(managed, catalog)),
                 (Ok(managed), Err(e)) => {

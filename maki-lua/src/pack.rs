@@ -568,7 +568,7 @@ pub fn install_declared(
             ));
             continue;
         }
-        let result = match smol::block_on(manager.ensure_installed(spec, &mut lock)) {
+        let result = match maki_rt::block_on(manager.ensure_installed(spec, &mut lock)) {
             Ok(result) => result,
             Err(e) => {
                 let message = redact_error(&e);
@@ -984,7 +984,7 @@ fn prepare_pack_ops_at(
                             .to_vec(),
                     )
                 };
-                let proposal = match smol::block_on(manager.prepare_update(
+                let proposal = match maki_rt::block_on(manager.prepare_update(
                     spec,
                     &lock,
                     options.target == UpdateTarget::Lockfile,
@@ -1117,7 +1117,7 @@ pub fn apply_pack_plan(plan: PackPlan) -> PackReport {
                 name,
                 update,
                 approve,
-            } => match smol::block_on(manager.apply_update(&update, &mut lock)) {
+            } => match maki_rt::block_on(manager.apply_update(&update, &mut lock)) {
                 Ok(installed) => {
                     report.updated.push((name.clone(), installed.rev));
                     let Some(approve) = approve else { continue };
@@ -1939,7 +1939,7 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) -> maki_pack::git::GitOutput {
-        smol::block_on(maki_pack::git::run(
+        maki_rt::block_on(maki_pack::git::run(
             args.iter().map(|arg| (*arg).to_owned()).collect(),
             repo.to_path_buf(),
         ))
@@ -1971,7 +1971,7 @@ mod tests {
         let lock_path = temp.path().join("pack-lock.json");
         let spec = maki_pack::Spec::new(origin.display().to_string()).with_name("demo");
         let mut lock = maki_pack::lockfile::Lockfile::default();
-        let installed = smol::block_on(
+        let installed = maki_rt::block_on(
             maki_pack::manager::Manager::new(&site).ensure_installed(&spec, &mut lock),
         )
         .unwrap();

@@ -17,6 +17,8 @@ name = "maki"
 path = "src/main.rs"
 
 [dependencies]
+maki-rt = { workspace = true }
+tokio = { workspace = true }
 maki-ui = { workspace = true }
 maki-agent = { workspace = true }
 maki-acp = { workspace = true }
@@ -31,9 +33,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-smol = { workspace = true }
 tempfile = { workspace = true }
-isahc = { workspace = true }
+maki-http = { workspace = true }
 thiserror = { workspace = true }
 libc = { workspace = true }
 uuid = { workspace = true }
@@ -62,6 +63,8 @@ members = [
   "maki-config-macro",
   "maki-lua-macro",
   "maki-ui",
+  "maki-http",
+  "maki-rt",
 ]
 resolver = "3"
 
@@ -88,6 +91,8 @@ maki-highlight = { path = "maki-highlight" }
 maki-markdown = { path = "maki-markdown" }
 maki-otel = { path = "maki-otel" }
 maki-pack = { path = "maki-pack" }
+maki-http = { path = "maki-http" }
+maki-rt = { path = "maki-rt" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 bs58 = "0.5"
@@ -136,16 +141,15 @@ humantime = "2"
 semver = "1"
 toml = "0.8"
 toml_edit = "0.22"
-smol = "2"
-async-process = "2"
-async-lock = "3"
 arc-swap = "1"
 bitflags = "2"
-async-io = "2"
-event-listener = "5"
-futures-lite = "2"
 futures = "0.3"
-isahc = { version = "1.7", default-features = false, features = ["text-decoding", "static-curl", "static-ssl", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time", "sync", "macros", "process", "net", "fs", "io-util", "io-std"] }
+http = "1"
+http-body = "1"
+bytes = "1"
 flate2 = "1"
 libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Globalization"] }

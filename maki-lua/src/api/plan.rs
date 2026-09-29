@@ -828,7 +828,7 @@ mod tests {
         let table = create_plan_table(&lua, None).unwrap();
         lua.globals().set("plan", table).unwrap();
         let (val, err): (Value, Option<String>) =
-            smol::block_on(lua.load("return plan.read()").eval_async()).unwrap();
+            maki_rt::block_on(lua.load("return plan.read()").eval_async()).unwrap();
         assert!(val.is_nil());
         assert_eq!(err.as_deref(), Some(NO_UI_ERR));
     }
@@ -848,7 +848,7 @@ mod tests {
             reply_tx.send(Ok(serde_json::json!(true))).unwrap();
             req
         });
-        smol::block_on(lua.load(format!("return {call}")).eval_async::<Value>()).unwrap();
+        maki_rt::block_on(lua.load(format!("return {call}")).eval_async::<Value>()).unwrap();
         assert_eq!(served.join().unwrap().session(), expected);
     }
 }

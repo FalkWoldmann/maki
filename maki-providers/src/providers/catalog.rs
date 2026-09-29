@@ -15,9 +15,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use flume::Sender;
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use maki_config::providers::{ProvidersConfig, builtin_provider};
+use maki_http::config::VersionNegotiation;
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use serde_json::Value;
 use tracing::{debug, warn};
 
@@ -532,7 +532,7 @@ fn catalog_cache_path() -> Option<PathBuf> {
 
 async fn load_cached_catalog_async() -> Option<schema::CatalogIndex> {
     let path = catalog_cache_path()?;
-    let meta = smol::unblock({
+    let meta = maki_rt::unblock({
         let path = path.clone();
         move || fs::metadata(&path)
     })
@@ -546,7 +546,7 @@ async fn load_cached_catalog_async() -> Option<schema::CatalogIndex> {
         return None;
     }
 
-    let text = smol::unblock(move || fs::read_to_string(&path))
+    let text = maki_rt::unblock(move || fs::read_to_string(&path))
         .await
         .ok()?;
     let index: schema::CatalogIndex = serde_json::from_str(&text).ok()?;
@@ -561,7 +561,7 @@ async fn save_cached_catalog_async(index: &schema::CatalogIndex) {
     };
     if let Some(dir) = path.parent() {
         let dir = dir.to_path_buf();
-        let _ = smol::unblock(move || fs::create_dir_all(&dir)).await;
+        let _ = maki_rt::unblock(move || fs::create_dir_all(&dir)).await;
     }
     let text = match serde_json::to_string_pretty(index) {
         Ok(t) => t,
@@ -570,7 +570,7 @@ async fn save_cached_catalog_async(index: &schema::CatalogIndex) {
             return;
         }
     };
-    smol::unblock(move || {
+    maki_rt::unblock(move || {
         if let Err(e) = fs::write(&path, &text) {
             warn!(error = %e, path = %path.display(), "failed to write catalog cache");
         } else {
@@ -688,7 +688,7 @@ fn parse_model(model: &schema::CatalogModel) -> CatalogMeta {
 }
 
 fn catalog_client() -> HttpClient {
-    isahc::HttpClient::builder()
+    maki_http::HttpClient::builder()
         .connect_timeout(Duration::from_secs(10))
         .low_speed_timeout(1, Duration::from_secs(30))
         // curl carries http2 for OTLP.
@@ -698,8 +698,8 @@ fn catalog_client() -> HttpClient {
 }
 
 fn fetch_catalog_blocking(state_dir: &StateDir) -> Result<CatalogData, AgentError> {
-    let index = smol::block_on(fetch_remote_catalog_async(&catalog_client()))?;
-    smol::block_on(save_cached_catalog_async(&index));
+    let index = maki_rt::block_on(fetch_remote_catalog_async(&catalog_client()))?;
+    maki_rt::block_on(save_cached_catalog_async(&index));
     Ok(CatalogData::from_index(index, state_dir))
 }
 
@@ -713,7 +713,7 @@ fn init_catalog_blocking() -> CatalogData {
         }
     };
 
-    if let Some(index) = smol::block_on(load_cached_catalog_async()) {
+    if let Some(index) = maki_rt::block_on(load_cached_catalog_async()) {
         return CatalogData::from_index(index, &state_dir);
     }
 
@@ -943,7 +943,7 @@ impl LazyCatalogProvider {
         if self.inner.get().is_none() {
             let slug = self.slug.clone();
             let timeouts = self.timeouts;
-            let created = smol::unblock(move || create_resolved(&slug, timeouts)).await;
+            let created = maki_rt::unblock(move || create_resolved(&slug, timeouts)).await;
             let _ = self.inner.set(created.map_err(|e| e.to_string()));
         }
         match self.inner.get().expect("set above") {
@@ -1155,7 +1155,11 @@ mod tests {
         let data = opencode_go_provider_data("MAKI_TEST_OPENCODE_GO_UNSET_KEY_52814");
         let provider =
             super::CatalogProvider::new(data, &state_dir, Timeouts::default(), false).unwrap();
-        assert!(smol::block_on(provider.list_models()).unwrap().is_empty());
+        assert!(
+            maki_rt::block_on(provider.list_models())
+                .unwrap()
+                .is_empty()
+        );
 
         let model = Model {
             id: "free-model".into(),
@@ -1175,7 +1179,7 @@ mod tests {
             thinking_fields: None,
         };
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(provider.stream_message(
+        let result = maki_rt::block_on(provider.stream_message(
             &model,
             &[],
             "",
@@ -1196,7 +1200,7 @@ mod tests {
         let data = opencode_go_provider_data("MAKI_TEST_OPENCODE_GO_UNSET_KEY_91472");
         let provider =
             super::CatalogProvider::new(data, &state_dir, Timeouts::default(), true).unwrap();
-        let models = smol::block_on(provider.list_models()).unwrap();
+        let models = maki_rt::block_on(provider.list_models()).unwrap();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["free-model"]);
     }
@@ -1208,7 +1212,7 @@ mod tests {
         let data = opencode_go_provider_data("MAKI_TEST_OPENCODE_GO_KEY_41827");
         let provider =
             super::CatalogProvider::new(data, &state_dir, Timeouts::default(), false).unwrap();
-        let models = smol::block_on(provider.list_models()).unwrap();
+        let models = maki_rt::block_on(provider.list_models()).unwrap();
         let mut ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         ids.sort_unstable();
         assert_eq!(ids, ["free-model", "paid-model"]);

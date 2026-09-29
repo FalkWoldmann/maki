@@ -2,7 +2,7 @@ use std::io;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use async_process::Child;
+use tokio::process::Child;
 
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -14,7 +14,7 @@ pub struct ChildGuard {
 impl ChildGuard {
     pub fn new(child: Child) -> Self {
         Self {
-            pid: child.id(),
+            pid: child.id().expect("a freshly spawned child has a pid"),
             child: Some(child),
         }
     }
@@ -26,7 +26,7 @@ impl ChildGuard {
     pub async fn status(&mut self) -> io::Result<ExitStatus> {
         match self.child.as_mut() {
             Some(child) => {
-                let result = child.status().await;
+                let result = child.wait().await;
                 if result.is_ok() {
                     self.child = None;
                 }
@@ -42,15 +42,7 @@ impl ChildGuard {
     pub async fn kill_and_reap(&mut self) {
         self.signal_kill();
         if let Some(mut child) = self.child.take() {
-            futures_lite::future::or(
-                async {
-                    let _ = child.status().await;
-                },
-                async {
-                    async_io::Timer::after(REAP_TIMEOUT).await;
-                },
-            )
-            .await;
+            let _ = tokio::time::timeout(REAP_TIMEOUT, child.wait()).await;
         }
     }
 
@@ -66,7 +58,7 @@ impl ChildGuard {
     #[cfg(not(unix))]
     fn signal_kill(&mut self) {
         if let Some(child) = &mut self.child {
-            let _ = child.kill();
+            let _ = child.start_kill();
         }
     }
 
@@ -105,7 +97,7 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::time::{Duration, Instant};
 
-    use async_process::Child;
+    use tokio::process::{Child, Command};
 
     use super::ChildGuard;
 
@@ -118,8 +110,10 @@ mod tests {
                 Ok(())
             });
         }
-        let mut cmd: async_process::Command = std_cmd.into();
-        cmd.spawn().expect("failed to spawn sleep")
+        let _runtime = maki_rt::handle().enter();
+        Command::from(std_cmd)
+            .spawn()
+            .expect("failed to spawn sleep")
     }
 
     fn is_alive(pid: u32) -> bool {
@@ -140,7 +134,7 @@ mod tests {
     #[test]
     fn drop_kills_child_process() {
         let child = spawn_sleep();
-        let pid = child.id();
+        let pid = child.id().unwrap();
         assert!(is_alive(pid));
         drop(ChildGuard::new(child));
         wait_for_death(pid);
@@ -148,9 +142,9 @@ mod tests {
 
     #[test]
     fn kill_and_reap_kills_process() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let child = spawn_sleep();
-            let pid = child.id();
+            let pid = child.id().unwrap();
             assert!(is_alive(pid));
             let mut guard = ChildGuard::new(child);
             guard.kill_and_reap().await;
@@ -160,7 +154,7 @@ mod tests {
 
     #[test]
     fn status_after_reap_returns_error() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let child = spawn_sleep();
             let mut guard = ChildGuard::new(child);
             guard.kill_and_reap().await;

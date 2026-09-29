@@ -235,7 +235,7 @@ mod tests {
     /// The value comes back as JSON so assertions outlive the Lua state.
     fn eval(lua: &Lua, script: &str) -> (Json, Option<String>) {
         let (val, err): (Value, Option<String>) =
-            smol::block_on(lua.load(script).eval_async()).unwrap();
+            maki_rt::block_on(lua.load(script).eval_async()).unwrap();
         (lua_to_json(lua, &val).unwrap(), err)
     }
 
@@ -336,7 +336,7 @@ mod tests {
     #[test_case("return model.set(nil)" ; "explicit_nil")]
     fn set_throws_on_a_non_spec_argument(script: &str) {
         let lua = lua_with_model(None);
-        let err = smol::block_on(lua.load(script).eval_async::<Value>()).unwrap_err();
+        let err = maki_rt::block_on(lua.load(script).eval_async::<Value>()).unwrap_err();
         assert!(err.to_string().contains(SET_ARG_ERR));
     }
 }

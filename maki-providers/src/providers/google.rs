@@ -2,11 +2,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
-use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_http::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::{MakiId, SessionRef};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::warn;
 
 use maki_config::providers::Protocol;
@@ -147,7 +147,7 @@ impl Google {
         }
     }
 
-    fn build_request(&self, method: &str, url: &str) -> isahc::http::request::Builder {
+    fn build_request(&self, method: &str, url: &str) -> maki_http::http::request::Builder {
         let auth = self.auth.lock().unwrap();
         auth.configure_request(
             Request::builder()
@@ -576,7 +576,7 @@ fn push_or_extend_thinking(
 }
 
 async fn parse_sse(
-    response: isahc::Response<isahc::AsyncBody>,
+    response: maki_http::Response<maki_http::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
@@ -1094,9 +1094,12 @@ mod tests {
         );
     }
 
-    fn mock_response(data: &'static [u8]) -> isahc::Response<isahc::AsyncBody> {
-        let body = isahc::AsyncBody::from_bytes_static(data);
-        isahc::Response::builder().status(200).body(body).unwrap()
+    fn mock_response(data: &'static [u8]) -> maki_http::Response<maki_http::AsyncBody> {
+        let body = maki_http::AsyncBody::from_bytes_static(data);
+        maki_http::Response::builder()
+            .status(200)
+            .body(body)
+            .unwrap()
     }
 
     #[test]
@@ -1104,7 +1107,7 @@ mod tests {
         let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":10}}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
         assert_eq!(result.usage.input, 5);
         assert_eq!(result.usage.output, 10);
@@ -1127,7 +1130,7 @@ mod tests {
         data.push_str(&event("world."));
         let response = mock_response(data.leak().as_bytes());
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert_eq!(
             result.message.content.len(),
             1,
@@ -1156,7 +1159,7 @@ mod tests {
         data.push_str(&event("more.", Some("sig-final")));
         let response = mock_response(data.leak().as_bytes());
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert_eq!(result.message.content.len(), 1);
         assert!(matches!(
             &result.message.content[0],
@@ -1172,7 +1175,7 @@ mod tests {
         let data = format!("data: {payload}\n\n");
         let response = mock_response(data.leak().as_bytes());
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         let ids: Vec<&str> = result
             .message
             .content
@@ -1191,7 +1194,7 @@ mod tests {
         let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking...\",\"thought\":true,\"thoughtSignature\":\"sig1\"}]}},{\"content\":{\"parts\":[{\"text\":\"answer\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":20}}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert!(matches!(
             &result.message.content[0],
             ContentBlock::Thinking { thinking, signature } if thinking == "thinking..." && signature.as_deref() == Some("sig1")
@@ -1207,7 +1210,7 @@ mod tests {
         let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":15}}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert_eq!(result.stop_reason, Some(StopReason::ToolUse));
         assert!(matches!(
             &result.message.content[0],
@@ -1231,7 +1234,7 @@ mod tests {
         let data = format!("data: {payload}\n\n");
         let response = mock_response(data.leak().as_bytes());
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert!(matches!(
             &result.message.content[0],
             ContentBlock::ToolUse { thought_signature: Some(s), .. } if s == SIG
@@ -1243,7 +1246,7 @@ mod tests {
         let data = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10,\"cachedContentTokenCount\":50}}\n\n";
         let response = mock_response(data);
         let (tx, _rx) = flume::unbounded();
-        let result = smol::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
+        let result = maki_rt::block_on(parse_sse(response, &tx, Duration::from_secs(30))).unwrap();
         assert_eq!(result.usage.input, 100);
         assert_eq!(result.usage.output, 10);
         assert_eq!(result.usage.cache_read, 50);

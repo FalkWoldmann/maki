@@ -172,10 +172,10 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
                 Some(ms) => {
                     let recv = async { Some(rx.recv_async().await) };
                     let timeout = async {
-                        smol::Timer::after(Duration::from_millis(ms)).await;
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
                         None
                     };
-                    match smol::future::or(recv, timeout).await {
+                    match maki_rt::or(recv, timeout).await {
                         Some(res) => res,
                         None => return Ok(mlua::Value::Table(tagged(&lua, "timeout")?)),
                     }
@@ -470,7 +470,8 @@ mod tests {
         let lua = mlua::Lua::new();
         let (_event_tx, _cmd_rx, handle) = make_channels();
         lua.globals().set("win", handle).unwrap();
-        let ty: String = smol::block_on(lua.load("return win:recv(5).type").eval_async()).unwrap();
+        let ty: String =
+            maki_rt::block_on(lua.load("return win:recv(5).type").eval_async()).unwrap();
         assert_eq!(ty, "timeout");
     }
 
@@ -484,7 +485,7 @@ mod tests {
             })
             .unwrap();
         lua.globals().set("win", handle).unwrap();
-        let got: String = smol::block_on(
+        let got: String = maki_rt::block_on(
             lua.load("local ev = win:recv(1000) return ev.type .. ':' .. ev.key")
                 .eval_async(),
         )
@@ -497,14 +498,13 @@ mod tests {
         let lua = mlua::Lua::new();
         let (event_tx, cmd_rx, handle) = make_channels();
         lua.globals().set("win", handle).unwrap();
-        let ex = smol::LocalExecutor::new();
-        let recv_task = ex.spawn(
-            lua.load("return win:recv(5000).type")
-                .eval_async::<String>(),
-        );
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(tokio::task::LocalSet::new().run_until(async {
+            let recv_task = maki_rt::spawn_local(
+                lua.load("return win:recv(5000).type")
+                    .eval_async::<String>(),
+            );
             for _ in 0..10 {
-                smol::future::yield_now().await;
+                tokio::task::yield_now().await;
             }
             lua.load("win:set_cursor(3)").exec_async().await.unwrap();
             event_tx

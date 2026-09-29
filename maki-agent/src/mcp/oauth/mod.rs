@@ -10,8 +10,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use futures_lite::future;
-use isahc::HttpClient;
+use maki_http::HttpClient;
 use maki_storage::StateDir;
 use maki_storage::auth::{McpAuthData, load_mcp_auth, save_mcp_auth};
 use tracing::{info, warn};
@@ -176,12 +175,12 @@ pub async fn authenticate(
             eprintln!("If this machine has no browser, log in on another device and paste");
             eprintln!("the full redirect URL ({redirect_uri}?...) here:");
 
-            let callback_or_paste = future::race(
+            let callback_or_paste = maki_rt::race(
                 callback.wait_for_callback(&state),
                 manual::wait_for_paste(&state),
             );
 
-            future::race(callback_or_paste, auth_timeout()).await
+            maki_rt::race(callback_or_paste, auth_timeout()).await
         }
         Interaction::Background => {
             let cause = if is_headless() {
@@ -193,7 +192,7 @@ pub async fn authenticate(
             };
             match cause {
                 Some(cause) => Err(format!("{cause}; run 'maki mcp auth {server_name}'")),
-                None => future::race(callback.wait_for_callback(&state), auth_timeout()).await,
+                None => maki_rt::race(callback.wait_for_callback(&state), auth_timeout()).await,
             }
         }
     }
@@ -303,7 +302,7 @@ async fn discover_auth_server_for(
 }
 
 async fn auth_timeout() -> Result<CallbackResult, String> {
-    smol::Timer::after(AUTH_TIMEOUT).await;
+    tokio::time::sleep(AUTH_TIMEOUT).await;
     Err(format!(
         "OAuth flow timed out after {} minutes",
         AUTH_TIMEOUT.as_secs() / 60

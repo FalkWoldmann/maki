@@ -216,7 +216,7 @@ fn exec_tool(reg: &ToolRegistry, name: &str, input: Value) -> Result<String, Str
         .unwrap_or_else(|| panic!("tool {name} not registered"));
     let inv = entry.tool.parse(&input).expect("parse failed");
     let ctx = stub_ctx(&AgentMode::Build);
-    smol::block_on(async { inv.execute(&ctx).await })
+    maki_rt::block_on(async { inv.execute(&ctx).await })
         .output
         .map(|out| match out {
             ToolOutput::Plain(s) | ToolOutput::Markdown(s) => s.text,

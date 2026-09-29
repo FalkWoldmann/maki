@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use event_listener::Event;
+use tokio::sync::Notify;
+use tokio::task::LocalSet;
 
 use include_dir::Dir;
 use maki_agent::cancel::CancelToken;
@@ -613,7 +614,7 @@ pub(crate) struct TaskCell {
     pub(crate) deadline_secs: Cell<Option<u64>>,
     /// Notified by `ctx:set_deadline`, so [`until_abandoned`] re-arms on the
     /// new deadline instead of staying parked on the one it started with.
-    pub(crate) deadline_changed: Event,
+    pub(crate) deadline_changed: Arc<Notify>,
     pub(crate) bufs: BufferStore,
     pub(crate) live: Option<LiveCtx>,
     /// The buf that owns click routing for this task: the last one passed
@@ -654,7 +655,7 @@ impl TaskCell {
             kill_at: Cell::new(None),
             deadline: Cell::new(deadline),
             deadline_secs: Cell::new(None),
-            deadline_changed: Event::new(),
+            deadline_changed: Arc::new(Notify::new()),
             bufs: BufferStore::new(),
             live,
             root_buf: None,
@@ -1283,10 +1284,10 @@ async fn run_scoped<F: Future>(lua: &Lua, scope: TaskScope, fut: F) -> F::Output
                 with_jobs(lua, |store| store.next_event(&owner))
             })
             .await;
-            smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+            tokio::time::sleep(DISPATCH_POLL_INTERVAL).await;
         }
     };
-    let out = scope.scope_future(smol::future::or(fut, pump)).await;
+    let out = scope.scope_future(maki_rt::or(fut, pump)).await;
     // `or` drops the pump the moment {fut} wins, so one last pass under the
     // same scope delivers whatever arrived in between; the scope teardown
     // right after reaps any task job. Only a callback caught mid-suspend at
@@ -1359,7 +1360,7 @@ async fn deliver_pending(
         }
         // A callback with nothing to await never yields, so a job printing
         // faster than we deliver would hold the executor here forever.
-        smol::future::yield_now().await;
+        tokio::task::yield_now().await;
     }
 }
 
@@ -1498,8 +1499,8 @@ const TEST_WAKE_TIMEOUT_MSG: &str = "timed out waiting for a cancelled task to w
 
 #[cfg(test)]
 pub(crate) fn block_on_or_fail<T>(fut: impl Future<Output = T>) -> T {
-    smol::block_on(futures_lite::future::or(fut, async {
-        smol::Timer::after(TEST_WAKE_TIMEOUT).await;
+    maki_rt::block_on(maki_rt::or(fut, async {
+        tokio::time::sleep(TEST_WAKE_TIMEOUT).await;
         panic!("{TEST_WAKE_TIMEOUT_MSG}");
     }))
 }
@@ -1553,7 +1554,7 @@ struct InflightGate {
     lua: Lua,
     count: Cell<usize>,
     ops_since_gc: Cell<usize>,
-    event: Event,
+    event: Notify,
 }
 
 impl InflightGate {
@@ -1562,7 +1563,7 @@ impl InflightGate {
             lua,
             count: Cell::new(0),
             ops_since_gc: Cell::new(0),
-            event: Event::new(),
+            event: Notify::new(),
         }
     }
 
@@ -1572,7 +1573,7 @@ impl InflightGate {
 
     fn decrement(&self) {
         self.count.set(self.count.get().saturating_sub(1));
-        self.event.notify(usize::MAX);
+        self.event.notify_waiters();
         let ops = self.ops_since_gc.get() + 1;
         if ops >= GC_STEP_INTERVAL {
             self.ops_since_gc.set(0);
@@ -1587,11 +1588,11 @@ impl InflightGate {
             if self.count.get() < limit {
                 return;
             }
-            let listener = self.event.listen();
+            let notified = self.event.notified();
             if self.count.get() < limit {
                 return;
             }
-            listener.await;
+            notified.await;
         }
     }
 
@@ -1599,7 +1600,7 @@ impl InflightGate {
     /// lets just-spawned tasks register before the barrier reads the count;
     /// a `drain` queued right behind a spawn cannot slip past it.
     async fn drain(&self) {
-        smol::future::yield_now().await;
+        tokio::task::yield_now().await;
         self.wait_below(1).await;
     }
 
@@ -1624,7 +1625,7 @@ impl InflightGate {
     ) -> Result<GateGuard, &'static str> {
         let lapsed = async {
             match deadline {
-                Some(at) => _ = smol::Timer::at(at).await,
+                Some(at) => _ = tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
                 None => std::future::pending::<()>().await,
             }
             HANDLER_TIMEOUT_MSG
@@ -1633,8 +1634,8 @@ impl InflightGate {
             cancel.cancelled().await;
             CANCELLED_MSG
         };
-        futures_lite::future::or(async { Ok(self.acquire().await) }, async {
-            Err(futures_lite::future::or(cancelled, lapsed).await)
+        maki_rt::or(async { Ok(self.acquire().await) }, async {
+            Err(maki_rt::or(cancelled, lapsed).await)
         })
         .await
     }
@@ -1867,13 +1868,19 @@ async fn until_abandoned<T>(
         loop {
             // Listen before reading: a `ctx:set_deadline` landing between the
             // two wakes us instead of leaving us armed on the stale deadline.
-            let changed = lock_cell(handle).deadline_changed.listen();
+            let changed = Arc::clone(&lock_cell(handle).deadline_changed).notified_owned();
             // Bound before the match: the guard would outlive the await.
             let deadline = lock_cell(handle).deadline.get();
             match deadline {
                 Some(dl) if dl <= Instant::now() => break,
                 Some(dl) => {
-                    futures_lite::future::or(async { _ = smol::Timer::at(dl).await }, changed).await
+                    maki_rt::or(
+                        async {
+                            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(dl)).await
+                        },
+                        changed,
+                    )
+                    .await
                 }
                 None => changed.await,
             }
@@ -1882,11 +1889,11 @@ async fn until_abandoned<T>(
     };
     let cancelled = async {
         cancel.cancelled().await;
-        smol::Timer::after(CANCEL_ABANDON_AFTER).await;
+        tokio::time::sleep(CANCEL_ABANDON_AFTER).await;
         CANCELLED_MSG
     };
-    futures_lite::future::or(async { Ok(fut.await) }, async {
-        Err(futures_lite::future::or(timed_out, cancelled).await)
+    maki_rt::or(async { Ok(fut.await) }, async {
+        Err(maki_rt::or(timed_out, cancelled).await)
     })
     .await
 }
@@ -1915,16 +1922,11 @@ async fn run_work_fn(
 /// cheaply, but the bodies compete for the `MAX_INFLIGHT_TOOLS` budget so
 /// `for i=1,10000 do maki.defer_fn(f, 0) end` can't run 10k coroutines at
 /// once. Errors are logged and dropped, nobody is awaiting a result.
-fn spawn_deferred_callback(
-    lua: &Lua,
-    ex: &Rc<smol::LocalExecutor<'_>>,
-    gate: &Rc<InflightGate>,
-    cb: DeferredCallback,
-) {
+fn spawn_deferred_callback(lua: &Lua, gate: &Rc<InflightGate>, cb: DeferredCallback) {
     let lua = lua.clone();
     let gate = Rc::clone(gate);
-    ex.spawn(async move {
-        smol::Timer::after(cb.delay).await;
+    maki_rt::spawn_local(async move {
+        tokio::time::sleep(cb.delay).await;
         let _guard = gate.acquire().await;
         // Only now stop advertising the timer as pending: up to here a
         // `clear_plugin` can still flip the flag we read below, and from here
@@ -1973,12 +1975,7 @@ fn spawn_deferred_callback(
 /// because a picker the user left open would otherwise hold the barrier for as
 /// long as it is on screen - which is why a command handler takes no guard at
 /// all.
-fn spawn_keybind_callback(
-    lua: &Lua,
-    ex: &Rc<smol::LocalExecutor<'_>>,
-    gate: &Rc<InflightGate>,
-    ticket: KeybindTicket,
-) {
+fn spawn_keybind_callback(lua: &Lua, gate: &Rc<InflightGate>, ticket: KeybindTicket) {
     let key = ticket.key();
     if !ticket.plugin_live() {
         tracing::warn!(?key, plugin = %ticket.plugin(), "keybind key dropped: plugin unloaded");
@@ -1996,7 +1993,7 @@ fn spawn_keybind_callback(
     let (done_tx, done_rx) = flume::bounded::<()>(1);
     let handler_lua = lua.clone();
     let plugin = Arc::clone(ticket.plugin());
-    ex.spawn(async move {
+    maki_rt::spawn_local(async move {
         let _done = done_tx;
         if let Err(e) = run_detached(&handler_lua, func.call_async::<LuaValue>(())).await {
             tracing::warn!(?key, plugin = %plugin, error = %strip_traceback(&e), "keybind callback failed, key spent");
@@ -2004,15 +2001,15 @@ fn spawn_keybind_callback(
     })
     .detach();
     let gate = Rc::clone(gate);
-    ex.spawn(async move {
+    maki_rt::spawn_local(async move {
         let _guard = GateGuard::new(&gate);
         let _ticket = ticket;
-        futures_lite::future::or(
+        maki_rt::or(
             async {
                 let _ = done_rx.recv_async().await;
             },
             async {
-                smol::Timer::after(KEYBIND_TICKET_HOLD).await;
+                tokio::time::sleep(KEYBIND_TICKET_HOLD).await;
                 tracing::warn!(?key, "keybind handler outlived its budget slot");
             },
         )
@@ -2021,12 +2018,7 @@ fn spawn_keybind_callback(
     .detach();
 }
 
-fn spawn_async_task(
-    lua: &Lua,
-    ex: &Rc<smol::LocalExecutor<'_>>,
-    gate: &Rc<InflightGate>,
-    task: PendingAsyncTask,
-) {
+fn spawn_async_task(lua: &Lua, gate: &Rc<InflightGate>, task: PendingAsyncTask) {
     if task.cancel.is_cancelled() {
         tracing::debug!(
             tool_id = task.live_ctx.as_ref().map(|l| l.tool_use_id.as_str()),
@@ -2039,7 +2031,7 @@ fn spawn_async_task(
     let lua = lua.clone();
     let g = Rc::clone(gate);
 
-    ex.spawn(async move {
+    maki_rt::spawn_local(async move {
         let slot = Some(g.acquire().await);
 
         let mut cell = TaskCell::new(task.cancel.clone(), task.deadline, task.live_ctx.clone());
@@ -2087,13 +2079,12 @@ fn spawn_async_task(
 /// loop would spawn - after the barrier already passed.
 async fn drain_barrier(
     lua: &Lua,
-    ex: &Rc<smol::LocalExecutor<'_>>,
     gate: &Rc<InflightGate>,
     spawn_rx: &flume::Receiver<PendingAsyncTask>,
 ) {
     loop {
         while let Ok(task) = spawn_rx.try_recv() {
-            spawn_async_task(lua, ex, gate, task);
+            spawn_async_task(lua, gate, task);
         }
         gate.drain().await;
         if spawn_rx.is_empty() {
@@ -3012,7 +3003,6 @@ async fn run_inline_tasks(lua: &Lua, scope: &TaskScope) {
 /// warm click handle, so evict it first: a later click must not resurface
 /// the stale view.
 fn spawn_restore(
-    ex: &Rc<smol::LocalExecutor<'_>>,
     gate: &Rc<InflightGate>,
     restores: &Rc<RestoreTracker>,
     rt: &LuaRuntime,
@@ -3024,7 +3014,7 @@ fn spawn_restore(
     let lua = rt.lua.clone();
     let plugins = Rc::clone(&rt.plugins);
     let g = Rc::clone(gate);
-    ex.spawn(async move {
+    maki_rt::spawn_local(async move {
         let _tracker = tracker;
         // Acquired before the timeout race starts, so the per-item deadline
         // measures the item's own run, not time queued behind the whole batch.
@@ -3034,8 +3024,8 @@ fn spawn_restore(
         let tool = Arc::clone(&item.tool);
         let res = covered(
             slot,
-            futures_lite::future::race(restore_item(&lua, &plugins, item), async {
-                smol::Timer::after(RESTORE_ITEM_TIMEOUT).await;
+            maki_rt::race(restore_item(&lua, &plugins, item), async {
+                tokio::time::sleep(RESTORE_ITEM_TIMEOUT).await;
                 tracing::warn!(tool = &*tool, "restore item timed out");
                 None
             }),
@@ -3097,7 +3087,7 @@ async fn dispatch_async(
     let owner = JobOwner::Task(lock_cell(&handle).id);
     if with_jobs(lua, |store| store.is_empty(&owner)) {
         lua.gc_collect().ok();
-        smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+        tokio::time::sleep(DISPATCH_POLL_INTERVAL).await;
         return match finish_rx.try_recv() {
             Ok(reply) => reply,
             _ => ToolCallReply::err(NIL_WITHOUT_FINISH_MSG),
@@ -3131,18 +3121,18 @@ async fn dispatch_async(
             if let Err(e) = deliver_job_event(lua, job_id, &event).await {
                 return ToolCallReply::err(format!("job callback error: {}", strip_traceback(&e)));
             }
-            smol::future::yield_now().await;
+            tokio::task::yield_now().await;
             continue;
         }
 
         if with_jobs(lua, |store| store.is_empty(&owner)) {
-            smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+            tokio::time::sleep(DISPATCH_POLL_INTERVAL).await;
             return match finish_rx.try_recv() {
                 Ok(reply) => reply,
                 _ => ToolCallReply::err(NIL_WITHOUT_FINISH_MSG),
             };
         }
-        smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+        tokio::time::sleep(DISPATCH_POLL_INTERVAL).await;
     }
 }
 
@@ -3741,7 +3731,7 @@ pub(crate) struct LuaThread {
     pub key_lint: KeyLint,
 }
 
-/// Lua lives on its own OS thread (no Send needed). `smol::block_on`
+/// Lua lives on its own OS thread (no Send needed). `maki_rt::block_on`
 /// drives async, load/clear requests wait for in-flight tools.
 pub fn spawn(
     registry: Arc<ToolRegistry>,
@@ -3799,10 +3789,10 @@ pub fn spawn(
                 }
             };
 
-            let ex = Rc::new(smol::LocalExecutor::new());
+            let local = LocalSet::new();
             {
                 let lua = rt.lua.clone();
-                ex.spawn(async move {
+                local.spawn_local(async move {
                     loop {
                         // Pop before building the scope so an idle pump costs
                         // nothing. The delivery scope republishes the task
@@ -3821,10 +3811,9 @@ pub fn spawn(
                                 .await;
                             drop(scope);
                         }
-                        smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
+                        tokio::time::sleep(DISPATCH_POLL_INTERVAL).await;
                     }
-                })
-                .detach();
+                });
             }
             let gate = Rc::new(InflightGate::new(rt.lua.clone()));
             let restores = Rc::new(RestoreTracker::default());
@@ -3832,15 +3821,14 @@ pub fn spawn(
             {
                 let lua = rt.lua.clone();
                 let gate = Rc::clone(&gate);
-                ex.spawn(async move {
+                local.spawn_local(async move {
                     while let Ok(hook) = hook_rx.recv_async().await {
                         // Counted as in-flight so a plugin reload waiting on
                         // `drain_barrier` cannot land mid-handler.
                         let _guard = GateGuard::new(&gate);
                         run_host_hook(&lua, hook).await;
                     }
-                })
-                .detach();
+                });
             }
             let spawn_rx = rt
                 .lua
@@ -3857,13 +3845,13 @@ pub fn spawn(
 
             let mut codegen_armed = false;
 
-            smol::block_on(ex.run(async {
+            maki_rt::block_on(local.run_until(async {
                 loop {
                     while let Ok(task) = spawn_rx.try_recv() {
-                        spawn_async_task(&rt.lua, &ex, &gate, task);
+                        spawn_async_task(&rt.lua, &gate, task);
                     }
                     while let Ok(cb) = defer_rx.try_recv() {
-                        spawn_deferred_callback(&rt.lua, &ex, &gate, cb);
+                        spawn_deferred_callback(&rt.lua, &gate, cb);
                     }
                     // Nothing to serve, so spend the lull on native codegen.
                     // One chunk per pass with a yield in between, so no request
@@ -3874,7 +3862,7 @@ pub fn spawn(
                         && spawn_rx.is_empty()
                         && rt.codegen_step()
                     {
-                        smol::future::yield_now().await;
+                        tokio::task::yield_now().await;
                         continue;
                     }
                     // Biased: user-initiated requests (commands, keybinds) jump
@@ -3883,18 +3871,18 @@ pub fn spawn(
                     // plain requests. `defer_rx` is selected on so a queued
                     // `maki.defer_fn` wakes the loop instead of stalling
                     // behind the next unrelated request.
-                    let next = smol::future::or(
+                    let next = maki_rt::or(
                         async { prio_rx.recv_async().await.map(Some) },
-                        smol::future::or(
+                        maki_rt::or(
                             async {
                                 let task = spawn_rx.recv_async().await?;
-                                spawn_async_task(&rt.lua, &ex, &gate, task);
+                                spawn_async_task(&rt.lua, &gate, task);
                                 Ok(None)
                             },
-                            smol::future::or(
+                            maki_rt::or(
                                 async {
                                     let cb = defer_rx.recv_async().await?;
-                                    spawn_deferred_callback(&rt.lua, &ex, &gate, cb);
+                                    spawn_deferred_callback(&rt.lua, &gate, cb);
                                     Ok(None)
                                 },
                                 async { rx.recv_async().await.map(Some) },
@@ -3905,7 +3893,7 @@ pub fn spawn(
                     let msg = match next {
                         Ok(Some(m)) => m,
                         Ok(None) => {
-                            smol::future::yield_now().await;
+                            tokio::task::yield_now().await;
                             continue;
                         }
                         Err(_) => break,
@@ -3923,7 +3911,7 @@ pub fn spawn(
                             context,
                             reply,
                         } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
+                            drain_barrier(&rt.lua, &gate, &spawn_rx).await;
                             let res = rt
                                 .load_source(
                                     Arc::clone(&name),
@@ -3951,7 +3939,7 @@ pub fn spawn(
                             let shutdown_ref = Arc::clone(&rt.shutdown);
                             let g = Rc::clone(&gate);
                             let cancel = ctx.cancel.clone();
-                            ex.spawn(async move {
+                            maki_rt::spawn_local(async move {
                                 let slot = if nested {
                                     None
                                 } else {
@@ -3998,7 +3986,7 @@ pub fn spawn(
                             let _ = reply.send(ops);
                         }
                         Request::ClearPlugin { plugin, reply } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
+                            drain_barrier(&rt.lua, &gate, &spawn_rx).await;
                             rt.clear_plugin(&plugin);
                             let _ = reply.send(());
                         }
@@ -4026,7 +4014,7 @@ pub fn spawn(
                                 Ok((plugin, func)) => {
                                     let lua = rt.lua.clone();
                                     let gate = Rc::clone(&gate);
-                                    ex.spawn(async move {
+                                    maki_rt::spawn_local(async move {
                                         let run = async {
                                             let opts =
                                                 row_handler_opts(&lua, &session, &path, parallel)?;
@@ -4088,7 +4076,7 @@ pub fn spawn(
                             let lua = rt.lua.clone();
                             let plugins = Rc::clone(&rt.plugins);
                             let gate = Rc::clone(&gate);
-                            ex.spawn(async move {
+                            maki_rt::spawn_local(async move {
                                 let menu =
                                     open_plan_form(&lua, &plugins, &gate, path, &session, rows)
                                         .await;
@@ -4116,7 +4104,7 @@ pub fn spawn(
                                 });
                             if let Some(func) = handler_fn {
                                 let lua = rt.lua.clone();
-                                ex.spawn(async move {
+                                maki_rt::spawn_local(async move {
                                     let run = async {
                                         let opts = lua.create_table()?;
                                         opts.set(
@@ -4160,7 +4148,7 @@ pub fn spawn(
                             let lua = rt.lua.clone();
                             let plugins = Rc::clone(&rt.plugins);
                             let gate = Rc::clone(&gate);
-                            ex.spawn(async move {
+                            maki_rt::spawn_local(async move {
                                 let verdict = run_hook(&lua, &plugins, &gate, run).await;
                                 let _ = reply.send(verdict);
                             })
@@ -4172,7 +4160,7 @@ pub fn spawn(
                             plugin_dir,
                             reply,
                         } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
+                            drain_barrier(&rt.lua, &gate, &spawn_rx).await;
                             let res = rt.run_init_lua(&source, scope, plugin_dir).await;
                             let _ = reply.send(res);
                         }
@@ -4198,7 +4186,7 @@ pub fn spawn(
                             context,
                             reply,
                         } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
+                            drain_barrier(&rt.lua, &gate, &spawn_rx).await;
                             let name = declared.spec.name.clone();
                             let input = (|| {
                                 let crate::api::pack::LoadMode::Custom(loader) = &declared.load
@@ -4248,7 +4236,7 @@ pub fn spawn(
                             let _ = reply.send(result);
                         }
                         Request::RestoreToolAsync { item, event_tx } => {
-                            spawn_restore(&ex, &gate, &restores, &rt, item, event_tx);
+                            spawn_restore(&gate, &restores, &rt, item, event_tx);
                         }
                         Request::RestoreComplete { flag } => {
                             restores.complete(flag);
@@ -4280,7 +4268,7 @@ pub fn spawn(
                                 // either way the fallback restore serves it.
                                 if let Some(fb) = fallback {
                                     spawn_restore(
-                                        &ex, &gate, &restores, &rt, fb.item, fb.event_tx,
+                                        &gate, &restores, &rt, fb.item, fb.event_tx,
                                     );
                                 } else {
                                     tracing::debug!(tool_use_id, "unhandled click ignored");
@@ -4296,7 +4284,7 @@ pub fn spawn(
                                 }
                                 Err(_) => LuaValue::Nil,
                             };
-                            ex.spawn(async move {
+                            maki_rt::spawn_local(async move {
                                 let slot = Some(g.acquire().await);
                                 let call = covered(
                                     slot,
@@ -4346,7 +4334,7 @@ pub fn spawn(
                             };
                             let lua = rt.lua.clone();
                             let g = Rc::clone(&gate);
-                            ex.spawn(async move {
+                            maki_rt::spawn_local(async move {
                                 let slot = match nested {
                                     true => None,
                                     false => Some(g.acquire().await),
@@ -4358,7 +4346,7 @@ pub fn spawn(
                             .detach();
                         }
                         Request::RunKeybindCallback { ticket } => {
-                            spawn_keybind_callback(&rt.lua, &ex, &gate, ticket);
+                            spawn_keybind_callback(&rt.lua, &gate, ticket);
                         }
                     }
                 }
@@ -4405,7 +4393,7 @@ mod tests {
     use super::*;
     use crate::api::r#fn::JobSpec;
     use crate::api::tool::ToolCallReply;
-    use futures_lite::future::poll_once;
+    use futures::FutureExt;
     use maki_agent::cancel::CancelTrigger;
     use std::future::poll_fn;
     use std::task::Poll;
@@ -4434,7 +4422,7 @@ mod tests {
     fn the_bounded_drain_stops_on_an_endless_stream() {
         let lua = test_lua();
         let mut offered = 0usize;
-        smol::block_on(deliver_pending(&lua, FINAL_DRAIN_BUDGET, || {
+        maki_rt::block_on(deliver_pending(&lua, FINAL_DRAIN_BUDGET, || {
             offered += 1;
             (offered <= FINAL_DRAIN_BUDGET * 2).then(|| (1, JobEvent::Stdout("spam".into())))
         }));
@@ -4595,17 +4583,16 @@ mod tests {
 
     #[test]
     fn inflight_gate_drain_requires_all_decrements() {
-        let ex = smol::LocalExecutor::new();
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let g = Rc::new(gate());
             g.increment();
             g.increment();
             let g2 = Rc::clone(&g);
-            let waiter = ex.spawn(async move { g2.drain().await });
-            smol::future::yield_now().await;
+            let waiter = maki_rt::spawn_local(async move { g2.drain().await });
+            tokio::task::yield_now().await;
             assert!(!waiter.is_finished());
             g.decrement();
-            smol::future::yield_now().await;
+            tokio::task::yield_now().await;
             assert!(!waiter.is_finished());
             g.decrement();
             waiter.await;
@@ -4614,15 +4601,15 @@ mod tests {
 
     #[test]
     fn inflight_gate_blocks_at_max_capacity() {
-        let ex = smol::LocalExecutor::new();
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let g = Rc::new(gate());
             for _ in 0..MAX_INFLIGHT_TOOLS {
                 g.increment();
             }
             let g2 = Rc::clone(&g);
-            let waiter = ex.spawn(async move { g2.wait_below(MAX_INFLIGHT_TOOLS).await });
-            smol::future::yield_now().await;
+            let waiter =
+                maki_rt::spawn_local(async move { g2.wait_below(MAX_INFLIGHT_TOOLS).await });
+            tokio::task::yield_now().await;
             assert!(!waiter.is_finished());
             g.decrement();
             waiter.await;
@@ -4631,22 +4618,21 @@ mod tests {
 
     #[test]
     fn acquire_caps_concurrent_holders_even_when_spawned_in_bulk() {
-        let ex = smol::LocalExecutor::new();
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let g = Rc::new(gate());
             let (release_tx, release_rx) = flume::unbounded::<()>();
             let tasks: Vec<_> = (0..MAX_INFLIGHT_TOOLS + 1)
                 .map(|_| {
                     let g = Rc::clone(&g);
                     let release_rx = release_rx.clone();
-                    ex.spawn(async move {
+                    maki_rt::spawn_local(async move {
                         let _guard = g.acquire().await;
                         release_rx.recv_async().await.ok();
                     })
                 })
                 .collect();
             for _ in 0..MAX_INFLIGHT_TOOLS + 2 {
-                smol::future::yield_now().await;
+                tokio::task::yield_now().await;
             }
             assert_eq!(g.count.get(), MAX_INFLIGHT_TOOLS);
             drop(release_tx);
@@ -4662,16 +4648,15 @@ mod tests {
     /// still owes a slot.
     #[test]
     fn slot_cover_does_not_leak_into_a_sibling_task() {
-        let ex = smol::LocalExecutor::new();
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let (release_tx, release_rx) = flume::unbounded::<()>();
-            let holder = ex.spawn(covered(None, async move {
+            let holder = maki_rt::spawn_local(covered(None, async move {
                 let entered = under_inflight_slot();
                 release_rx.recv_async().await.ok();
                 (entered, under_inflight_slot())
             }));
-            smol::future::yield_now().await;
-            assert!(!ex.spawn(async { under_inflight_slot() }).await);
+            tokio::task::yield_now().await;
+            assert!(!maki_rt::spawn_local(async { under_inflight_slot() }).await);
             drop(release_tx);
             assert_eq!(holder.await, (true, true));
             assert!(!under_inflight_slot());
@@ -4686,8 +4671,7 @@ mod tests {
         cancelled: bool,
         expected: &str,
     ) {
-        let ex = smol::LocalExecutor::new();
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let g = Rc::new(gate());
             for _ in 0..MAX_INFLIGHT_TOOLS {
                 g.increment();
@@ -4898,15 +4882,14 @@ mod tests {
 
     #[test]
     fn spawn_async_task_skips_cancelled_tasks() {
-        let ex = Rc::new(smol::LocalExecutor::new());
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let lua = enqueue_test_lua();
             let (trigger, token) = CancelToken::new();
             trigger.cancel();
 
             let g = Rc::new(gate());
-            spawn_async_task(&lua, &ex, &g, pending_task(&lua, token, None));
-            smol::future::yield_now().await;
+            spawn_async_task(&lua, &g, pending_task(&lua, token, None));
+            tokio::task::yield_now().await;
             assert_eq!(g.count.get(), 0);
         }));
     }
@@ -5033,12 +5016,9 @@ mod tests {
     #[test]
     fn until_abandoned_ends_a_parked_handler_only_after_its_window() {
         let parked = std::future::pending::<()>;
-        smol::block_on(async {
-            let early = futures_lite::future::poll_once(until_abandoned(
-                parked(),
-                &task_handle(cancelled_token(), None),
-            ))
-            .await;
+        maki_rt::block_on(async {
+            let early =
+                (until_abandoned(parked(), &task_handle(cancelled_token(), None))).now_or_never();
             assert!(
                 early.is_none(),
                 "a cancel must not abandon the handler before its window"
@@ -5069,15 +5049,15 @@ mod tests {
     fn until_abandoned_re_arms_on_a_deadline_set_after_it_started() {
         let handle = task_handle(CancelToken::none(), None);
         let cell = Arc::clone(&handle);
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let set = async {
-                smol::Timer::after(Duration::from_millis(1)).await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
                 let cell = lock_cell(&cell);
                 cell.deadline.set(Some(Instant::now()));
-                cell.deadline_changed.notify(usize::MAX);
+                cell.deadline_changed.notify_waiters();
             };
             let wait = until_abandoned(std::future::pending::<()>(), &handle);
-            let (_, err) = futures_lite::future::zip(set, wait).await;
+            let (_, err) = tokio::join!(set, wait);
             assert_eq!(
                 err.expect_err("the new deadline must end the handler"),
                 HANDLER_TIMEOUT_MSG
@@ -5095,7 +5075,7 @@ mod tests {
         lock_cell(&handle).kill_due(Instant::now());
         assert!(lock_cell(&handle).kill_at.get().is_some());
 
-        smol::block_on(scope.scope_future(std::future::ready(())));
+        maki_rt::block_on(scope.scope_future(std::future::ready(())));
 
         assert!(lock_cell(&handle).kill_at.get().is_none());
     }
@@ -5133,7 +5113,7 @@ mod tests {
     /// first poll and no waker round trip is needed.
     fn poll_cancelled_scope_once(scope: &TaskScope) {
         let mut fut = scope.scope_future(std::future::pending::<()>());
-        assert!(smol::block_on(poll_once(&mut fut)).is_none());
+        assert!(maki_rt::block_on(async { (&mut fut).now_or_never() }).is_none());
     }
 
     /// A hook armed after the token tripped has no transition left to ride, so
@@ -5210,7 +5190,7 @@ mod tests {
 
         let mut nested = scope.scope_future(scope.scope_future(std::future::pending::<()>()));
         for _ in 0..HOOK_POLL_ROUNDS {
-            assert!(smol::block_on(poll_once(&mut nested)).is_none());
+            assert!(maki_rt::block_on(async { (&mut nested).now_or_never() }).is_none());
         }
 
         assert_eq!(fired_rx.try_iter().count(), 1);
@@ -5291,7 +5271,7 @@ mod tests {
         recording_hook(&lua, &fired_tx, HOOK_GOOD_MARK);
         let (item_tx, item_rx) = flume::bounded(1);
 
-        let out = block_on_or_fail(futures_lite::future::or(
+        let out = block_on_or_fail(maki_rt::or(
             scope.scope_future(async move { item_rx.recv_async().await.unwrap() }),
             async move {
                 trigger.cancel();
@@ -5328,7 +5308,7 @@ mod tests {
         register_cancel_hook(&lua, hook).unwrap();
         trigger.cancel();
 
-        let out = smol::block_on(scope.scope_future(poll_fn(move |_| {
+        let out = maki_rt::block_on(scope.scope_future(poll_fn(move |_| {
             inner_ran.store(true, Ordering::SeqCst);
             Poll::Ready(HOOK_INNER_OUTPUT)
         })));
@@ -5424,9 +5404,8 @@ mod tests {
             command_depth: 0,
         };
 
-        let ex = Rc::new(smol::LocalExecutor::new());
-        block_on_or_fail(ex.run(async {
-            spawn_async_task(&lua, &ex, &Rc::new(gate()), task);
+        block_on_or_fail(LocalSet::new().run_until(async {
+            spawn_async_task(&lua, &Rc::new(gate()), task);
             armed_rx.recv_async().await.unwrap();
             trigger.cancel();
             assert_eq!(fired_rx.recv_async().await.ok(), Some(HOOK_CHILD_MARK));
@@ -5478,7 +5457,7 @@ mod tests {
             setup(&lua, finish_tx);
 
             let start = Instant::now();
-            let reply = smol::block_on(dispatch_async(
+            let reply = maki_rt::block_on(dispatch_async(
                 &lua,
                 Arc::clone(scope.handle()),
                 DISPATCH_TEST_PLUGIN,
@@ -5641,8 +5620,7 @@ mod tests {
 
     #[test]
     fn spawn_async_task_runs_and_decrements_gate() {
-        let ex = Rc::new(smol::LocalExecutor::new());
-        smol::block_on(ex.run(async {
+        maki_rt::block_on(LocalSet::new().run_until(async {
             let lua = enqueue_test_lua();
             let task = pending_task(
                 &lua,
@@ -5651,10 +5629,10 @@ mod tests {
             );
 
             let g = Rc::new(gate());
-            spawn_async_task(&lua, &ex, &g, task);
+            spawn_async_task(&lua, &g, task);
 
             for _ in 0..10 {
-                smol::future::yield_now().await;
+                tokio::task::yield_now().await;
                 if g.count.get() == 0 {
                     return;
                 }

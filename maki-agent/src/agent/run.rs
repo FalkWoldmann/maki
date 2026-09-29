@@ -138,7 +138,7 @@ pub struct Agent<'h> {
     event_tx: EventSender,
     tools: RequestTools,
     mode: AgentMode,
-    user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
+    user_response_rx: Option<Arc<tokio::sync::Mutex<flume::Receiver<String>>>>,
     interrupt_source: Option<Arc<dyn InterruptSource>>,
     cancel: CancelToken,
     ledger: Arc<RunLedger>,
@@ -235,7 +235,7 @@ impl<'h> Agent<'h> {
 
     pub fn with_user_response_rx(
         mut self,
-        rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
+        rx: Arc<tokio::sync::Mutex<flume::Receiver<String>>>,
     ) -> Self {
         self.user_response_rx = Some(rx);
         self
@@ -678,7 +678,7 @@ impl<'h> Agent<'h> {
         warn!(error = %err, attempt = self.reauth_attempts, "auth error, waiting for re-authentication");
         self.event_tx.send(AgentEvent::AuthRequired)?;
         let rx = rx.lock().await;
-        match futures_lite::future::race(rx.recv_async(), async {
+        match maki_rt::race(rx.recv_async(), async {
             self.cancel.cancelled().await;
             Err(flume::RecvError::Disconnected)
         })
@@ -1117,7 +1117,7 @@ mod tests {
                 }
                 match self.fail_status {
                     Some(status) => Err(AgentError::api(status, "stub")),
-                    None => futures_lite::future::pending().await,
+                    None => std::future::pending().await,
                 }
             })
         }
@@ -1239,7 +1239,7 @@ mod tests {
 
     #[test]
     fn run_ingests_preamble_then_mailbox_then_user_message() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let id = maki_storage::id::MakiId::generate();
             let mailbox = SessionMailbox::register(id);
             SessionMailbox::notify(id, "mailbox".into(), false).unwrap();
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[test]
     fn queued_input_drains_preamble_and_mailbox() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let id = maki_storage::id::MakiId::generate();
             let mailbox = SessionMailbox::register(id);
             SessionMailbox::notify(id, "mailbox".into(), false).unwrap();
@@ -1291,7 +1291,7 @@ mod tests {
 
     #[test]
     fn wake_only_run_does_not_insert_an_empty_user_turn() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let id = maki_storage::id::MakiId::generate();
             let mailbox = SessionMailbox::register(id);
             SessionMailbox::notify(id, "failed".into(), true).unwrap();
@@ -1379,7 +1379,7 @@ mod tests {
 
     #[test]
     fn mcp_definitions_refresh_per_request() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let provider = MockProvider::new(vec![
                 tool_use_response(
                     crate::mcp::TOOL_SEARCH_TOOL_NAME,
@@ -1433,7 +1433,7 @@ mod tests {
         expected_turns: u32,
         expected_reason: DoneReason,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let responses: Vec<_> = stops.iter().map(|s| text_response(*s)).collect();
             let provider = MockProvider::new(responses);
             let (turns, reason) = run_agent(provider, max_turns).await;
@@ -1446,7 +1446,7 @@ mod tests {
     #[test_case(Some(false), true,  true  ; "after_text_only_turn")]
     #[test_case(None,        false, false ; "channel_empty")]
     fn interrupt_handling(queued: Option<bool>, expect_consumed: bool, expect_injected: bool) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let source = if queued.is_some() {
                 Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
                     vec![default_input()],
@@ -1528,7 +1528,7 @@ mod tests {
         switched_thinking: ThinkingSupport,
         adopted: bool,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mock = MockProvider::new(vec![
                 tool_call_response("glob", "t1"),
                 text_response(StopReason::EndTurn),
@@ -1602,7 +1602,7 @@ mod tests {
     /// ask the mock for a response it does not have.
     #[test]
     fn queued_messages_are_delivered_in_one_turn() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let inputs = Vec::from(QUEUED_MESSAGES.map(|text| AgentInput {
                 message: text.into(),
                 ..default_input()
@@ -1650,7 +1650,7 @@ mod tests {
         commands: Vec<ExtractedCommand>,
         responses: Vec<StreamResponse>,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let source = MockInterruptSource::new(commands);
 
             let mut history = History::new(prior);
@@ -1668,7 +1668,7 @@ mod tests {
     /// same context number, so nobody downstream thinks it has spare room.
     #[test]
     fn context_size_is_one_gauge_across_turn_complete_and_done() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut response = text_response(StopReason::EndTurn);
             response.usage = TokenUsage {
                 input: 1_000,
@@ -1703,7 +1703,7 @@ mod tests {
     /// model has none.
     #[test]
     fn ledger_banks_list_cost_on_a_metered_model() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut response = text_response(StopReason::EndTurn);
             response.usage = TokenUsage {
                 input: 1_000,
@@ -1741,7 +1741,7 @@ mod tests {
     #[test_case(true,  150_000, false ; "enabled_but_below_threshold")]
     #[test_case(false, 170_000, false ; "disabled_even_over_threshold")]
     fn try_auto_compact_behavior(enabled: bool, context_size: u32, expected: bool) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let responses = if expected {
                 vec![text_response(StopReason::EndTurn)]
             } else {
@@ -1779,7 +1779,7 @@ mod tests {
     /// not be summarized away along with it.
     #[test]
     fn resumed_overflowing_history_compacts_before_first_request() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let prior = (0..OVERFLOW_CHUNKS)
                 .map(|i| Message::user(format!("{OVERFLOW_CHUNK}{i}")))
                 .collect();
@@ -1868,7 +1868,7 @@ mod tests {
     #[test_case(0, true, RECOVER_MSG ; "unpredicted_overflow_compacts_and_retries")]
     #[test_case(MAX_OVERFLOW_RECOVERIES, false, GIVE_UP_MSG ; "exhausted_recoveries_surface_the_error")]
     fn overflow_recovery(recoveries: u32, expected: bool, message: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(vec![Message::user("go".into())]);
             let (mut agent, event_rx) = make_agent(OverflowProvider(Mutex::new(1)), &mut history);
             agent.auto_compact = true;
@@ -1897,7 +1897,7 @@ mod tests {
     /// alone cannot tell that this input is still unanswered.
     #[test]
     fn compaction_carries_input_queued_mid_run() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let filling = StreamResponse {
                 usage: TokenUsage {
@@ -1944,7 +1944,7 @@ mod tests {
 
     #[test]
     fn do_compact_appends_post_instructions_to_continue_message() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             const POST: &str = "Re-read plan.md";
             let mut history = History::new(vec![Message::user("go".into())]);
             let (mut agent, _event_rx) = make_agent(
@@ -1966,7 +1966,7 @@ mod tests {
 
     #[test]
     fn cancel_token_aborts_during_api_call() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, cancel) = CancelToken::new();
             trigger.cancel();
 
@@ -1993,7 +1993,7 @@ mod tests {
     #[test]
     fn cancel_mid_stream_keeps_partial_text_in_history() {
         const PARTIAL: &str = "partial answer";
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, cancel) = CancelToken::new();
             let provider = StubStreamProvider {
                 delta: Some(PARTIAL),
@@ -2026,7 +2026,7 @@ mod tests {
     #[test]
     fn cancel_during_retry_backoff_discards_failed_attempt_text() {
         const PARTIAL: &str = "doomed attempt";
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, cancel) = CancelToken::new();
             let provider = StubStreamProvider {
                 delta: Some(PARTIAL),
@@ -2038,7 +2038,7 @@ mod tests {
             let mut agent = agent.with_cancel(cancel);
 
             let mut trigger = Some(trigger);
-            let pump = smol::spawn(async move {
+            let pump = maki_rt::spawn(async move {
                 while let Ok(envelope) = event_rx.recv_async().await {
                     if matches!(envelope.event, AgentEvent::Retry { .. })
                         && let Some(t) = trigger.take()
@@ -2079,7 +2079,7 @@ mod tests {
         ; "doom_loop"
     )]
     fn error_emits_tool_done_event(responses: Vec<StreamResponse>, expected_error_id: &str) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(MockProvider::new(responses), &mut history);
             let _ = agent.run(default_input()).await;
@@ -2127,7 +2127,7 @@ mod tests {
         ; "no_nudge_without_recent_tools"
     )]
     fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expected_nudges: usize) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(MockProvider::new(responses), &mut history);
             let _ = agent.run(default_input()).await;
@@ -2165,7 +2165,7 @@ mod tests {
     /// the new user message breaks the streak.
     #[test]
     fn nudge_budget_resets_on_new_run() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let responses = [tool_call_response("glob", "t1")]
                 .into_iter()
                 .chain((0..=MAX_NUDGES).map(|_| empty_response()))
@@ -2242,7 +2242,7 @@ mod tests {
 
     #[test]
     fn user_message_rewrite_is_what_the_model_sees() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),
@@ -2275,7 +2275,7 @@ mod tests {
         answer: fn(AgentSlot, &Value) -> Verdict,
         reason: &str,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
             script(&agent.registry, answer);
@@ -2297,7 +2297,7 @@ mod tests {
     #[test_case(ExtractedCommand::Interrupt(vec![AgentInput { message: BLOCKED.into(), ..default_input() }]) ; "dropped_interrupt")]
     #[test_case(ExtractedCommand::Compact(None) ; "skipped_compact")]
     fn queued_command_that_lands_nothing_ends_the_run(cmd: ExtractedCommand) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (agent, _event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),
@@ -2329,7 +2329,7 @@ mod tests {
         expected: &[&str],
         expected_reason: DoneReason,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, _event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),
@@ -2366,7 +2366,7 @@ mod tests {
     #[test_case(None, MAX_STOP_CONTINUATIONS ; "capped_in_a_row")]
     #[test_case(Some(1), 0 ; "not_asked_on_the_last_turn")]
     fn stop_continuations_are_bounded(max_turns: Option<u32>, allowed: u32) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let allowed = allowed as usize;
             let mut history = History::new(Vec::new());
             let (mut agent, event_rx) = make_agent(
@@ -2406,7 +2406,7 @@ mod tests {
     /// answer is done, and the frontend must still hear it was cancelled.
     #[test]
     fn cancel_during_stop_layer_reports_cancelled() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let (trigger, cancel) = CancelToken::new();
             let trigger = Mutex::new(Some(trigger));
             let mut history = History::new(Vec::new());
@@ -2434,7 +2434,7 @@ mod tests {
 
     #[test]
     fn stop_sees_the_last_answer() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(Vec::new());
             let (mut agent, _event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),
@@ -2461,7 +2461,7 @@ mod tests {
         reason: CompactReason,
         compacts: bool,
     ) {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(vec![Message::user("go".into())]);
             let (mut agent, event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),
@@ -2484,7 +2484,7 @@ mod tests {
 
     #[test]
     fn compact_before_continue_joins_the_configured_one() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             const POST: &str = "Re-read plan.md";
             let mut history = History::new(vec![Message::user("go".into())]);
             let (mut agent, _event_rx) = make_agent(
@@ -2521,7 +2521,7 @@ mod tests {
     /// follow it and the generic nudge stays out.
     #[test]
     fn compact_before_continue_follows_carried_input() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(vec![
                 Message::user("go".into()),
                 Message::user(CARRIED.into()),
@@ -2552,7 +2552,7 @@ mod tests {
 
     #[test]
     fn compaction_done_carries_the_summary() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let mut history = History::new(vec![Message::user("go".into())]);
             let (mut agent, event_rx) = make_agent(
                 MockProvider::new(vec![assistant_response(vec![ContentBlock::Text {
@@ -2603,7 +2603,7 @@ mod tests {
     /// bound panics on the request after.
     #[test]
     fn interrupt_restores_the_stop_allowance() {
-        smol::block_on(async {
+        maki_rt::block_on(async {
             let allowed = 2 * MAX_STOP_CONTINUATIONS as usize;
             let mut history = History::new(Vec::new());
             let (agent, event_rx) = make_agent(

@@ -77,7 +77,7 @@ impl Xai {
             message: "OAuth refresh not available for externally-managed auth".into(),
         })?;
         let rejected = self.auth.lock().unwrap().access_token().map(str::to_owned);
-        let resolved = smol::unblock(move || {
+        let resolved = maki_rt::unblock(move || {
             match refreshed_tokens(
                 &storage,
                 auth::PROVIDER,
@@ -215,7 +215,7 @@ impl Provider for Xai {
                         let access = bearer_token(&auth).ok_or_else(|| AgentError::Config {
                             message: "xAI OAuth token missing from resolved auth".into(),
                         })?;
-                        smol::unblock(move || catalog::list_models(&access, false)).await
+                        maki_rt::unblock(move || catalog::list_models(&access, false)).await
                     })
                     .await;
             }
@@ -246,7 +246,7 @@ impl Provider for Xai {
             let Some(storage) = self.storage.clone() else {
                 return Ok(());
             };
-            let resolved = smol::unblock(move || auth::resolve(&storage)).await?;
+            let resolved = maki_rt::unblock(move || auth::resolve(&storage)).await?;
             *self.auth.lock().unwrap() = resolved;
             debug!("reloaded xAI auth from storage");
             Ok(())

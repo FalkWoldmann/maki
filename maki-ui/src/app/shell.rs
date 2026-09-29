@@ -1,18 +1,17 @@
 use std::collections::HashSet;
-use std::process::Command as StdCommand;
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use async_process::{Command, Stdio};
-use futures_lite::StreamExt;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
 use maki_agent::{
     AgentConfig, CancelToken, CancelTrigger, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 use maki_providers::{Message, strip_provider_keys};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::process::Command;
 
 use super::App;
 
@@ -174,7 +173,7 @@ pub(crate) fn spawn_shell(
     cancel: CancelToken,
     config: AgentConfig,
 ) {
-    smol::spawn(async move {
+    maki_rt::spawn(async move {
         let _ = tx.send(ShellEvent::Start {
             id: id.clone(),
             command: command.clone(),
@@ -253,11 +252,11 @@ async fn run_command(
 
     macro_rules! race_deadline {
         ($future:expr) => {
-            futures_lite::future::race(
+            maki_rt::race(
                 $future,
-                futures_lite::future::race(
+                maki_rt::race(
                     async {
-                        smol::Timer::at(deadline).await;
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
                         Err(format!("timed out after {}s", SHELL_TIMEOUT.as_secs()))
                     },
                     async {
@@ -328,14 +327,13 @@ fn flush_output(tx: &flume::Sender<ShellEvent>, id: &str, output: &str) {
     });
 }
 
-fn spawn_line_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
+fn spawn_line_reader<R: AsyncRead + Unpin + Send + 'static>(
     reader: BufReader<R>,
     tx: flume::Sender<String>,
 ) {
-    smol::spawn(async move {
+    maki_rt::spawn(async move {
         let mut lines = reader.lines();
-        while let Some(line) = lines.next().await {
-            let Ok(line) = line else { break };
+        while let Ok(Some(line)) = lines.next_line().await {
             if tx.send(line).is_err() {
                 break;
             }

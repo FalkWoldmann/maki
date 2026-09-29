@@ -58,7 +58,7 @@ pub(super) struct AgentLoop {
     permissions: Arc<PermissionManager>,
     file_access: Arc<FileAccess>,
     agent_tx: flume::Sender<Envelope>,
-    answer_rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
+    answer_rx: Arc<tokio::sync::Mutex<flume::Receiver<String>>>,
     queue: Arc<QueueReceiver>,
     session_id: SessionRef,
     mailbox: SessionMailbox,
@@ -105,7 +105,7 @@ impl AgentLoop {
             permissions,
             file_access: FileAccess::fresh(),
             agent_tx,
-            answer_rx: Arc::new(async_lock::Mutex::new(answer_rx)),
+            answer_rx: Arc::new(tokio::sync::Mutex::new(answer_rx)),
             queue,
             mailbox,
             timeouts,
@@ -354,7 +354,7 @@ impl AgentLoop {
 
     async fn reload_instructions(&mut self) {
         let cwd = self.vars.apply("{cwd}").into_owned();
-        self.instructions = smol::unblock(move || agent::load_instructions(&cwd)).await;
+        self.instructions = maki_rt::unblock(move || agent::load_instructions(&cwd)).await;
     }
 
     fn publish_btw_system(&self, prompt_slots: &maki_agent::prompt::ResolvedSlots) {
@@ -399,7 +399,7 @@ fn spawn_oauth_for_needs_auth(handle: &McpHandle) {
         let www_auth = url.clone();
         let oauth = info.oauth.clone();
         let ca_file = info.ca_file.clone();
-        smol::spawn(async move {
+        maki_rt::spawn(async move {
             let storage = match maki_storage::StateDir::resolve() {
                 Ok(s) => s,
                 Err(e) => {

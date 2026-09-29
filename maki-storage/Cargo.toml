@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 getrandom = { workspace = true }
-isahc = { workspace = true }
+maki-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -19,5 +19,5 @@ uuid = { workspace = true }
 [dev-dependencies]
 test-case = { workspace = true }
 tempfile = { workspace = true }
-isahc = { workspace = true }
+maki-http = { workspace = true }
 serde_json = { workspace = true }

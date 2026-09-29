@@ -321,7 +321,7 @@ impl UserData for LuaCtx {
             cell.deadline_secs.set(Some(secs));
             cell.deadline
                 .set(Some(Instant::now() + Duration::from_secs(secs)));
-            cell.deadline_changed.notify(usize::MAX);
+            cell.deadline_changed.notify_waiters();
             Ok((Some(true), None))
         });
 
@@ -350,7 +350,7 @@ impl UserData for LuaCtx {
                 // hook firing meanwhile needs `ctx:finish`, which takes it
                 // mutably.
                 drop(this);
-                let blocks = smol::unblock(move || {
+                let blocks = maki_rt::unblock(move || {
                     let cwd = std::env::current_dir().unwrap_or_default();
                     let abs = resolve_abs_with_cwd(dir_path, &cwd);
                     maki_agent::find_subdirectory_instructions(&abs, &cwd, &loaded)
