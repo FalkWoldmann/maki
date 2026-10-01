@@ -138,16 +138,12 @@ fn resolve_notifier(
         NotificationMethod::Off => None,
         NotificationMethod::Osc9 => Some(ResolvedNotifier::Osc9),
         NotificationMethod::Bell => Some(ResolvedNotifier::Bell),
+        NotificationMethod::Auto => Some(if auto_supports_osc9() {
+            ResolvedNotifier::Osc9
+        } else {
+            ResolvedNotifier::Bell
+        }),
         NotificationMethod::Notify => Some(ResolvedNotifier::Notify),
-        // `auto`: OSC 9 in a supported terminal, otherwise desktop
-        // notifications.
-        NotificationMethod::Auto => {
-            if auto_supports_osc9() {
-                Some(ResolvedNotifier::Osc9)
-            } else {
-                Some(ResolvedNotifier::Notify)
-            }
-        }
     }
 }
 
@@ -504,23 +500,20 @@ mod tests {
             Some(ResolvedNotifier::Bell)
         );
         assert_eq!(
+            resolve_notifier(NotificationMethod::Notify, || panic!("auto detection ran")),
+            Some(ResolvedNotifier::Notify),
+        );
+        assert_eq!(
             resolve_notifier(NotificationMethod::Off, || panic!("auto detection ran")),
             None
         );
-        // `auto` prefers OSC 9 in a supported terminal, otherwise desktop
-        // notifications.
         assert_eq!(
             resolve_notifier(NotificationMethod::Auto, || true),
             Some(ResolvedNotifier::Osc9)
         );
         assert_eq!(
             resolve_notifier(NotificationMethod::Auto, || false),
-            Some(ResolvedNotifier::Notify),
-        );
-        // `notify` always uses the desktop notification backend.
-        assert_eq!(
-            resolve_notifier(NotificationMethod::Notify, || panic!("osc9 detection ran")),
-            Some(ResolvedNotifier::Notify),
+            Some(ResolvedNotifier::Bell)
         );
     }
 
