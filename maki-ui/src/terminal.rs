@@ -80,7 +80,8 @@ impl TerminalNotifier {
 
     pub(crate) fn notify(&self, message: &str, reason: &str) -> std::io::Result<()> {
         if matches!(self.notifier, ResolvedNotifier::Notify) {
-            return desktop_notification(message, reason);
+            desktop_notification(message, reason);
+            return Ok(());
         }
         write_sequence(&notification_sequence(self.notifier, self.mux, message))
     }
@@ -244,14 +245,20 @@ fn notification_sequence(notifier: ResolvedNotifier, mux: TerminalMux, message: 
     }
 }
 
-fn desktop_notification(message: &str, reason: &str) -> std::io::Result<()> {
-    notify_rust::Notification::new()
-        .appname(NOTIFICATION_TITLE)
-        .summary(reason)
-        .body(&sanitize_notification_message(message))
-        .show()
-        .map(|_| ())
-        .map_err(std::io::Error::other)
+fn desktop_notification(message: &str, reason: &str) {
+    let message = sanitize_notification_message(message);
+    let reason = reason.to_string();
+
+    std::thread::spawn(move || {
+        if let Err(error) = notify_rust::Notification::new()
+            .appname(NOTIFICATION_TITLE)
+            .summary(&reason)
+            .body(&message)
+            .show()
+        {
+            tracing::warn!(%error, "desktop notification failed");
+        }
+    });
 }
 
 impl TerminalMux {
