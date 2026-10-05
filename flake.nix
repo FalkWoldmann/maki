@@ -144,11 +144,9 @@
           commonArgs = {
             nativeBuildInputs = with pkgs; [
               pkg-config
-              perl
               python3
             ];
             buildInputs = with pkgs; [
-              openssl
               stdenv.cc.cc.lib
             ];
             inherit cargoVendorDir;
@@ -213,8 +211,6 @@
               cargo-nextest
               git
               just
-              openssl
-              perl
               pkg-config
               python3
               ripgrep
@@ -226,13 +222,7 @@
             SSL_CERT_FILE = certs;
             NIX_SSL_CERT_FILE = certs;
 
-            # isahc's `static-ssl` makes openssl-sys build OpenSSL from source,
-            # two minutes of a cold build. This shell already has one below, so
-            # use it. Release builds run in Alpine and still vendor.
-            OPENSSL_NO_VENDOR = "1";
-
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-              pkgs.openssl
               pkgs.stdenv.cc.cc.lib
             ];
           };

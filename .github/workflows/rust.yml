@@ -64,10 +64,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    env:
-      # The runner ships libssl-dev, so skip the two minute vendored OpenSSL
-      # build on a cache miss. Windows has none and keeps vendoring.
-      OPENSSL_NO_VENDOR: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -85,7 +81,6 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     env:
-      OPENSSL_NO_VENDOR: 1
       NEXTEST_PROFILE: ci
     steps:
       - uses: actions/checkout@v4
@@ -118,8 +113,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    env:
-      OPENSSL_NO_VENDOR: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
