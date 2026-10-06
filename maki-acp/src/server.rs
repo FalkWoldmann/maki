@@ -994,11 +994,13 @@ fn start_event_pump(
                     if let Some(id) = finish_turn(&pending) {
                         let error = AcpError::auth_required().data(json_str(&AUTH_FAILED_MSG));
                         send(&out_tx, Response::<AgentResponse>::new(id, Err(error)));
+                        // The agent waits for a re-authentication nothing in
+                        // this protocol can deliver, and it reads no further
+                        // input until that wait ends. Only once per turn:
+                        // parallel subagents each report their 401, and a
+                        // spare cancel would end the next prompt.
+                        let _ = cancel_tx.try_send(());
                     }
-                    // The agent waits for a re-authentication nothing in this
-                    // protocol can deliver, and it reads no further input until
-                    // that wait ends.
-                    let _ = cancel_tx.try_send(());
                     continue;
                 }
                 _ if subagent.is_some() => continue,
@@ -1945,6 +1947,7 @@ mod tests {
         handle_prompt(&mut srv, &raw, &RequestId::Number(PROMPT_ID)).unwrap();
         run_pump(&srv, None, |sender| {
             sender.send(AgentEvent::AuthRequired).unwrap();
+            sender.send(AgentEvent::AuthRequired).unwrap();
         });
 
         let response = out_rx.try_recv().expect("the in-flight prompt is answered");
@@ -1957,9 +1960,10 @@ mod tests {
             response["error"]["data"], AUTH_FAILED_MSG,
             "the client is told why the turn ended: {response}"
         );
-        assert!(
-            cancel_rx.try_recv().is_ok(),
-            "the agent parked on re-authentication is released"
+        assert_eq!(
+            cancel_rx.len(),
+            1,
+            "the agent parked on re-authentication is released, and no spare cancel is left for the next prompt"
         );
 
         assert!(pending(&srv).lock().unwrap().prompt.is_none());
