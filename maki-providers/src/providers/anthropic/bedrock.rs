@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use flume::Sender;
 use hmac::{Hmac, KeyInit, Mac};
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{HttpClient, ReadResponseExt, Request};
+use isahc::config::Configurable;
+use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use maki_storage::id::SessionRef;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -160,11 +160,12 @@ fn parse_aws_credentials_file(
     }
 }
 
-fn fetch_container_auth() -> Result<AuthKind, AgentError> {
+async fn fetch_container_auth(client: &HttpClient) -> Result<AuthKind, AgentError> {
     let url = env::var(CONTAINER_CREDENTIALS_URI_ENV).map_err(|_| AgentError::Config {
         message: format!("{CONTAINER_CREDENTIALS_URI_ENV} is no longer set"),
     })?;
-    let (access_key, secret_key, session_token, expires_at) = fetch_container_credentials(&url)?;
+    let (access_key, secret_key, session_token, expires_at) =
+        fetch_container_credentials(client, &url).await?;
     Ok(AuthKind::SigV4 {
         access_key,
         secret_key,
@@ -173,7 +174,8 @@ fn fetch_container_auth() -> Result<AuthKind, AgentError> {
     })
 }
 
-fn fetch_container_credentials(
+async fn fetch_container_credentials(
+    client: &HttpClient,
     url: &str,
 ) -> Result<(String, String, Option<String>, Option<u64>), AgentError> {
     // file rotates, so don't cache it.
@@ -186,28 +188,25 @@ fn fetch_container_credentials(
         Err(_) => env::var("AWS_CONTAINER_AUTHORIZATION_TOKEN").ok(),
     };
 
-    let client = HttpClient::builder()
+    let mut builder = Request::builder()
+        .method("GET")
+        .uri(url)
         .connect_timeout(CONTAINER_METADATA_TIMEOUT)
-        .timeout(CONTAINER_METADATA_TIMEOUT)
-        // curl carries http2 for OTLP.
-        .version_negotiation(VersionNegotiation::http11())
-        .build()
-        .map_err(|e| AgentError::Config {
-            message: format!("container creds http client: {e}"),
-        })?;
-
-    let mut builder = Request::builder().method("GET").uri(url);
+        .timeout(CONTAINER_METADATA_TIMEOUT);
     if let Some(token) = &auth_header {
         builder = builder.header("Authorization", token.trim());
     }
     let request = builder.body(Vec::<u8>::new())?;
 
-    let mut resp = client.send(request).map_err(|e| AgentError::Config {
-        message: format!("container creds request: {e}"),
-    })?;
+    let mut resp = client
+        .send_async(request)
+        .await
+        .map_err(|e| AgentError::Config {
+            message: format!("container creds request: {e}"),
+        })?;
 
     if resp.status().as_u16() != 200 {
-        let body_text = resp.text().unwrap_or_else(|_| "unknown error".into());
+        let body_text = resp.text().await.unwrap_or_else(|_| "unknown error".into());
         return Err(AgentError::Config {
             message: format!(
                 "container creds endpoint returned {}: {body_text}",
@@ -216,7 +215,7 @@ fn fetch_container_credentials(
         });
     }
 
-    let body_text = resp.text()?;
+    let body_text = resp.text().await?;
     parse_container_credentials_response(&body_text)
 }
 
@@ -553,7 +552,7 @@ impl Provider for Bedrock {
         Box::pin(async move {
             if self.needs_refresh() {
                 debug!("Bedrock container creds missing or near expiry, fetching before request");
-                let kind = smol::unblock(fetch_container_auth).await?;
+                let kind = fetch_container_auth(&self.client).await?;
                 self.auth.lock().unwrap().kind = kind;
             }
             let auth = self.auth.lock().unwrap().clone();
