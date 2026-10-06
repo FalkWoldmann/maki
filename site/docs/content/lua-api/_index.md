@@ -5831,15 +5831,20 @@ end
 ### `LanguageTree:parse()` {#LanguageTree-parse}
 
 ```lua
-LanguageTree:parse({range?})
+LanguageTree:parse({range?}, {on_parse?})
 ```
 
 Parses the source and returns a table containing the resulting Tree.
 The tree is cached, so calling this again is cheap.
 
+Pass {on_parse} for big sources: the parse then runs off the Lua thread,
+the call yields until it is done, calls `on_parse(nil, trees)` and returns
+the trees.
+
 **Parameters:**
 
 - `{range?}` (`table`) Unused. Accepted for API compatibility.
+- `{on_parse?}` (`function?`) Callback `function(err, trees)`. When given, the parse runs off the Lua thread.
 
 **Returns:** (`table`) Array with one Tree element.
 

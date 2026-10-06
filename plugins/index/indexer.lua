@@ -1,3 +1,7 @@
+-- Sources this big parse off the shared Lua thread instead of stalling every
+-- plugin. Smaller ones parse in place, which also works where the caller can't
+-- yield, like the specs that index from inside require.
+local ASYNC_PARSE_MIN_BYTES = 64 * 1024
 local FIELD_TRUNCATE_THRESHOLD = 8
 local LINE_WRAP_THRESHOLD = 120
 local MAX_INT = math.maxinteger or (2 ^ 53)
@@ -905,7 +909,8 @@ local function index_source(source, lang_name)
     return nil, "unsupported language: " .. tostring(lang_name)
   end
   local parser = maki.treesitter.get_parser(source, parser_name(lang_name))
-  local root = parser:parse()[1]:root()
+  local on_parse = #source >= ASYNC_PARSE_MIN_BYTES and function() end or nil
+  local root = parser:parse(nil, on_parse)[1]:root()
   local skeleton, meta = extractor(source, root)
   -- An empty skeleton reads as "this file declares nothing", and that is the
   -- wrong story to tell when the parser choked on the file instead.

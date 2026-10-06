@@ -274,6 +274,24 @@ parser:destroy()
 }
 
 #[test]
+fn parse_with_on_parse() {
+    let (_reg, host) = setup();
+    let src = format!(
+        r#"
+local parser = maki.treesitter.get_parser([==[{RUST_SOURCE}]==], "rust")
+local cb_err, cb_trees, cached = "unset", nil, nil
+local trees = parser:parse(nil, function(err, t)
+    cb_err, cb_trees, cached = err, t, parser:trees()
+end)
+assert(cb_err == nil)
+assert(cb_trees == trees)
+assert(cached[1]:root():type() == "source_file")
+"#
+    );
+    run_lua(&host, "on_parse", &src);
+}
+
+#[test]
 fn language_module() {
     let (_reg, host) = setup();
     run_lua(
