@@ -3,6 +3,10 @@ use std::sync::Arc;
 use maki_agent::tools::ToolRegistry;
 use maki_lua::PluginHost;
 
+/// Big enough that the parse is still running off the Lua thread when the
+/// other function asks the parser for its language.
+const BIG_SOURCE_REPEATS: usize = 500;
+
 fn setup() -> (Arc<ToolRegistry>, PluginHost) {
     let reg = Arc::new(ToolRegistry::new());
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
@@ -271,6 +275,41 @@ parser:destroy()
 "#
     );
     run_lua(&host, "language_tree", &src);
+}
+
+#[test]
+fn parse_with_on_parse() {
+    let (_reg, host) = setup();
+    let src = format!(
+        r#"
+local parser = maki.treesitter.get_parser([==[{RUST_SOURCE}]==], "rust")
+local cb_err, cb_trees, cached = "unset", nil, nil
+local trees = parser:parse(nil, function(err, t)
+    cb_err, cb_trees, cached = err, t, parser:trees()
+end)
+assert(cb_err == nil)
+assert(cb_trees == trees)
+assert(cached[1]:root():type() == "source_file")
+"#
+    );
+    run_lua(&host, "on_parse", &src);
+}
+
+#[test]
+fn the_parser_answers_while_an_async_parse_runs() {
+    let (_reg, host) = setup();
+    let src = format!(
+        r#"
+local parser = maki.treesitter.get_parser(string.rep([==[{RUST_SOURCE}]==], {BIG_SOURCE_REPEATS}), "rust")
+local results = maki.async.gather({{
+    function() return parser:parse(nil, function() end)[1]:root():type() end,
+    function() return parser:lang() end,
+}})
+assert(results[1].ok and results[1].value == "source_file", tostring(results[1].err))
+assert(results[2].ok and results[2].value == "rust", tostring(results[2].err))
+"#
+    );
+    run_lua(&host, "parse_alongside", &src);
 }
 
 #[test]

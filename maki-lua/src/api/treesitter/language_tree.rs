@@ -1,14 +1,30 @@
 use std::sync::Arc;
 
 use crate::language::Language;
+use arc_swap::ArcSwapOption;
 use maki_lua_macro::{lua_class, lua_fn};
-use mlua::{Function, Lua, Result as LuaResult, Table, Value as LuaValue};
+use mlua::{Function, Lua, Result as LuaResult, Table, UserDataRef, Value as LuaValue};
+use smol::unblock;
 use tree_sitter::{Parser, Tree};
 
 use super::tree::LuaTree;
 
+fn parse_source(lang: Language, source: &str) -> LuaResult<Tree> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&lang.ts_language())
+        .map_err(|e| mlua::Error::runtime(format!("failed to set language: {e}")))?;
+    parser
+        .parse(source.as_bytes(), None)
+        .ok_or_else(|| mlua::Error::runtime("parse returned no tree"))
+}
+
 pub(crate) struct LuaLanguageTree {
-    tree: Option<Arc<Tree>>,
+    /// Swapped in place so no method needs the userdata exclusively. An
+    /// async `parse` keeps its borrow across the parse off the Lua thread,
+    /// and an exclusive one would fail every other call on the parser until
+    /// it ends.
+    tree: ArcSwapOption<Tree>,
     source: Arc<str>,
     lang_name: Arc<str>,
     lang: Language,
@@ -17,42 +33,55 @@ pub(crate) struct LuaLanguageTree {
 impl LuaLanguageTree {
     pub(crate) fn new(source: Arc<str>, lang_name: Arc<str>, lang: Language) -> Self {
         Self {
-            tree: None,
+            tree: ArcSwapOption::empty(),
             source,
             lang_name,
             lang,
         }
     }
 
-    fn ensure_parsed(&mut self) -> Result<Arc<Tree>, mlua::Error> {
-        if let Some(ref tree) = self.tree {
-            return Ok(Arc::clone(tree));
+    fn ensure_parsed(&self) -> LuaResult<Arc<Tree>> {
+        match self.tree.load_full() {
+            Some(tree) => Ok(tree),
+            None => Ok(self.cache(parse_source(self.lang, &self.source)?)),
         }
-        let mut parser = Parser::new();
-        parser
-            .set_language(&self.lang.ts_language())
-            .map_err(|e| mlua::Error::runtime(format!("failed to set language: {e}")))?;
-        let tree = parser
-            .parse(self.source.as_bytes(), None)
-            .ok_or_else(|| mlua::Error::runtime("parse returned no tree"))?;
+    }
+
+    fn cache(&self, tree: Tree) -> Arc<Tree> {
         let tree = Arc::new(tree);
-        self.tree = Some(Arc::clone(&tree));
-        Ok(tree)
+        self.tree.store(Some(Arc::clone(&tree)));
+        tree
     }
 }
 
 /// Parses the source and returns a table containing the resulting Tree.
 /// The tree is cached, so calling this again is cheap.
 ///
+/// Pass {on_parse} for big sources: the parse then runs off the Lua thread,
+/// the call yields until it is done, calls `on_parse(nil, trees)` and returns
+/// the trees.
+///
 /// @param range table Unused. Accepted for API compatibility.
+/// @param on_parse function? Callback `function(err, trees)`. When given, the parse runs off the Lua thread.
 /// @return (table) Array with one Tree element.
 /// @example
 /// local trees = parser:parse()
 /// local root = trees[1]:root()
 #[lua_fn]
-fn parse(lua: &Lua, this: &mut LuaLanguageTree, range: Option<LuaValue>) -> LuaResult<Table> {
+async fn parse(
+    lua: Lua,
+    this: UserDataRef<LuaLanguageTree>,
+    range: Option<LuaValue>,
+    on_parse: Option<Function>,
+) -> LuaResult<Table> {
     let _ = range;
-    let tree = this.ensure_parsed()?;
+    let tree = if on_parse.is_some() && this.tree.load().is_none() {
+        let (lang, source) = (this.lang, Arc::clone(&this.source));
+        this.cache(unblock(move || parse_source(lang, &source)).await?)
+    } else {
+        this.ensure_parsed()?
+    };
+    drop(this);
     let result = lua.create_table()?;
     result.raw_set(
         1,
@@ -60,6 +89,9 @@ fn parse(lua: &Lua, this: &mut LuaLanguageTree, range: Option<LuaValue>) -> LuaR
             inner: Arc::clone(&tree),
         },
     )?;
+    if let Some(on_parse) = on_parse {
+        on_parse.call_async::<()>((LuaValue::Nil, &result)).await?;
+    }
     Ok(result)
 }
 
@@ -88,13 +120,8 @@ fn children(lua: &Lua, this: &LuaLanguageTree) -> LuaResult<Table> {
 #[lua_fn]
 fn trees(lua: &Lua, this: &LuaLanguageTree) -> LuaResult<Table> {
     let result = lua.create_table()?;
-    if let Some(ref tree) = this.tree {
-        result.raw_set(
-            1,
-            LuaTree {
-                inner: Arc::clone(tree),
-            },
-        )?;
+    if let Some(tree) = this.tree.load_full() {
+        result.raw_set(1, LuaTree { inner: tree })?;
     }
     Ok(result)
 }
@@ -134,7 +161,7 @@ fn is_valid(
 ///   print(tree:root():type())
 /// end)
 #[lua_fn]
-fn for_each_tree(_lua: &Lua, this: &mut LuaLanguageTree, r#fn: Function) -> LuaResult<()> {
+fn for_each_tree(_lua: &Lua, this: &LuaLanguageTree, r#fn: Function) -> LuaResult<()> {
     let tree = this.ensure_parsed()?;
     r#fn.call::<()>((LuaTree { inner: tree }, LuaValue::Nil))?;
     Ok(())
@@ -168,8 +195,8 @@ fn contains(_lua: &Lua, this: &LuaLanguageTree, range: LuaValue) -> LuaResult<bo
 ///
 /// @return
 #[lua_fn]
-fn destroy(_lua: &Lua, this: &mut LuaLanguageTree) -> LuaResult<()> {
-    this.tree = None;
+fn destroy(_lua: &Lua, this: &LuaLanguageTree) -> LuaResult<()> {
+    this.tree.store(None);
     Ok(())
 }
 
