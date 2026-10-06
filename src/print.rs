@@ -309,7 +309,6 @@ pub fn run(params: PrintParams) -> Result<()> {
             | AgentEvent::QueueDrained
             | AgentEvent::AutoCompacting { .. }
             | AgentEvent::CompactionDone { .. }
-            | AgentEvent::AuthRequired
             | AgentEvent::PermissionRequest { .. }
             | AgentEvent::SubagentHistory { .. }
             | AgentEvent::ToolSnapshot { .. }
@@ -319,6 +318,13 @@ pub fn run(params: PrintParams) -> Result<()> {
             | AgentEvent::Notice { .. }
             | AgentEvent::PromptProgress { .. }
             | AgentEvent::StreamClosed => {}
+            // A subagent parks on an auth error until it is answered, and the
+            // answer only makes it refresh, which fails or gives up on its own.
+            AgentEvent::AuthRequired => {
+                if let Some(tx) = subagent.as_ref().and_then(|s| s.answer_tx.as_ref()) {
+                    let _ = tx.try_send(String::new());
+                }
+            }
             AgentEvent::Steered { .. } => {
                 if let Some(reason) = dropped_prompt(event, parent_tool_use_id) {
                     is_error = true;
