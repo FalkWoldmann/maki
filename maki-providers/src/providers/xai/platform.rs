@@ -140,11 +140,12 @@ impl Xai {
         Fut: std::future::Future<Output = Result<T, AgentError>>,
     {
         let result = f().await;
-        if self.is_oauth()
-            && matches!(&result, Err(e) if e.is_auth_error())
-            && self.refresh_oauth().await.is_ok()
-        {
-            return f().await;
+        if self.is_oauth() && matches!(&result, Err(e) if e.is_auth_error()) {
+            match self.refresh_oauth().await {
+                Ok(()) => return f().await,
+                Err(e) if e.is_retryable() => return Err(e),
+                Err(_) => {}
+            }
         }
         result
     }

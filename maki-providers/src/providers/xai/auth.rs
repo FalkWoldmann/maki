@@ -164,9 +164,10 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
     );
     let (status, body_text) = post_form(TOKEN_URL, &form_body, TOKEN_EXCHANGE_TIMEOUT)?;
     if status != 200 {
-        return Err(AgentError::Config {
-            message: format!("xAI token refresh failed ({status}): {body_text}"),
-        });
+        return Err(AgentError::api(
+            status,
+            format!("xAI token refresh failed: {body_text}"),
+        ));
     }
     let token_resp: TokenResponse = serde_json::from_str(&body_text)?;
     into_oauth_tokens(token_resp, Some(tokens.refresh.clone()))
