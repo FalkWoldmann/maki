@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 
 use crate::AgentError;
 use crate::providers::oauth_loopback::{self, LoginMethod, Loopback};
-use crate::providers::{KeyPool, ResolvedAuth, refreshed_tokens, urlenc};
+use crate::providers::{KeyPool, ResolvedAuth, urlenc};
 
 use super::catalog;
 
@@ -122,9 +122,8 @@ fn post_form(url: &str, body: &str, timeout: Duration) -> Result<(u16, String), 
         builder = builder.header(key, value);
     }
     let request = builder.body(body.as_bytes().to_vec())?;
-    let mut resp = client.send(request).map_err(|e| AgentError::Config {
-        message: format!("xAI OAuth request: {e}"),
-    })?;
+    // A transport error, not `Config`: only the token endpoint's answer may clear the tokens.
+    let mut resp = client.send(request)?;
     let status = resp.status().as_u16();
     let text = resp.text().unwrap_or_default();
     Ok((status, text))
@@ -204,28 +203,15 @@ pub(crate) fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
-pub fn resolve(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
+pub fn resolve(dir: &StateDir) -> Result<(ResolvedAuth, Option<OAuthTokens>), AgentError> {
     if let Some(tokens) = load_tokens(dir, PROVIDER) {
-        if !tokens.is_expired() {
-            debug!("using xAI OAuth authentication");
-            return build_oauth_resolved(&tokens);
-        }
-        match refreshed_tokens(dir, PROVIDER, None, refresh_tokens) {
-            Ok(fresh) => {
-                debug!("using xAI OAuth authentication (refreshed)");
-                return build_oauth_resolved(&fresh);
-            }
-            Err(e) => {
-                warn!(error = %e, "xAI OAuth refresh failed, clearing stale tokens");
-                delete_tokens(dir, PROVIDER).ok();
-                catalog::invalidate();
-            }
-        }
+        debug!("using xAI OAuth authentication");
+        return Ok((build_oauth_resolved(&tokens)?, Some(tokens)));
     }
 
     if let Ok(pool) = KeyPool::resolve(PROVIDER, API_KEY_ENV) {
         debug!("using xAI API key authentication");
-        return ResolvedAuth::bearer(PROVIDER, pool.current());
+        return Ok((ResolvedAuth::bearer(PROVIDER, pool.current())?, None));
     }
 
     Err(AgentError::Config {

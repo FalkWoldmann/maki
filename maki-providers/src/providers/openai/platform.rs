@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use flume::Sender;
 use maki_storage::StateDir;
+use maki_storage::auth::OAuthTokens;
 use maki_storage::id::SessionRef;
 use maki_storage::sessions::Effort;
 use serde::Deserialize;
@@ -20,7 +21,7 @@ use crate::{
 
 use super::auth;
 use crate::providers::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
-use crate::providers::{ResolvedAuth, refreshed_tokens};
+use crate::providers::{ResolvedAuth, UNAUTHORIZED_STATUS, needs_refresh, refreshed_tokens};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     slug: Cow::Borrowed(super::SLUG),
@@ -302,6 +303,8 @@ struct CodexUsageWindow {
 pub struct OpenAi {
     compat: OpenAiCompatProvider,
     auth: Arc<Mutex<ResolvedAuth>>,
+    /// The stored OAuth tokens `auth` was built from, `None` for an API key.
+    tokens: Arc<Mutex<Option<OAuthTokens>>>,
     storage: Option<StateDir>,
     system_prefix: Option<String>,
     /// Env / `providers.toml` override for the platform API, resolved once at
@@ -313,12 +316,13 @@ pub struct OpenAi {
 impl OpenAi {
     pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
         let storage = StateDir::resolve()?;
-        let resolved = auth::resolve(&storage)?;
+        let (resolved, tokens) = auth::resolve(&storage)?;
         let compat = OpenAiCompatProvider::new(&CONFIG, timeouts);
         Ok(Self {
             resolved_base_url: resolve_openai_base_url(),
             compat,
             auth: Arc::new(Mutex::new(resolved)),
+            tokens: Arc::new(Mutex::new(tokens)),
             storage: Some(storage),
             system_prefix: None,
         })
@@ -332,6 +336,7 @@ impl OpenAi {
             resolved_base_url: resolve_openai_base_url(),
             compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
             auth,
+            tokens: Arc::default(),
             storage: None,
             system_prefix: None,
         }
@@ -350,30 +355,57 @@ impl OpenAi {
         self.storage.as_ref().is_some_and(auth::is_oauth)
     }
 
+    /// Installs the result inside the closure so a dropped caller still leaves it in use.
     async fn refresh_oauth(&self) -> Result<(), AgentError> {
         let storage = self.storage.clone().ok_or_else(|| AgentError::Config {
             message: "OAuth refresh not available for externally-managed auth".into(),
         })?;
         let rejected = self.auth.lock().unwrap().access_token().map(str::to_owned);
-        let resolved = smol::unblock(move || {
+        let shared = Arc::clone(&self.auth);
+        let held = Arc::clone(&self.tokens);
+        smol::unblock(move || {
             match refreshed_tokens(
                 &storage,
                 auth::PROVIDER,
                 rejected.as_deref(),
                 auth::refresh_tokens,
             ) {
-                Ok(fresh) => auth::build_oauth_resolved(&fresh),
+                Ok(fresh) => {
+                    *shared.lock().unwrap() = auth::build_oauth_resolved(&fresh)?;
+                    *held.lock().unwrap() = Some(fresh);
+                    Ok(())
+                }
+                Err(e) if e.is_retryable() => Err(e),
                 Err(e) => {
                     warn!(error = %e, "OpenAI OAuth refresh failed, clearing stale tokens");
                     let _ = maki_storage::auth::delete_tokens(&storage, auth::PROVIDER);
+                    if let Ok((fallback, tokens)) = auth::resolve(&storage) {
+                        *shared.lock().unwrap() = fallback;
+                        *held.lock().unwrap() = tokens;
+                    }
                     Err(e)
                 }
             }
         })
         .await?;
-        *self.auth.lock().unwrap() = resolved;
         debug!("refreshed OpenAI OAuth token");
         Ok(())
+    }
+
+    async fn refresh_if_stale(&self) -> Result<(), AgentError> {
+        let Some(storage) = self
+            .storage
+            .as_ref()
+            .filter(|s| needs_refresh(s, auth::PROVIDER, self.tokens.lock().unwrap().as_ref()))
+        else {
+            return Ok(());
+        };
+        match self.refresh_oauth().await {
+            Err(e) if !e.is_retryable() => auth::resolve(storage)
+                .map(drop)
+                .map_err(|e| AgentError::api(UNAUTHORIZED_STATUS, e.to_string())),
+            result => result,
+        }
     }
 
     async fn with_oauth_retry<T, F, Fut>(&self, f: F) -> Result<T, AgentError>
@@ -521,6 +553,7 @@ impl Provider for OpenAi {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
+            self.refresh_if_stale().await?;
             let mut buf = String::new();
             let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
@@ -580,6 +613,7 @@ impl Provider for OpenAi {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
+            self.refresh_if_stale().await?;
             if self.is_oauth() {
                 return Ok(
                     match self.with_oauth_retry(|| self.fetch_plan_models()).await {
@@ -601,6 +635,7 @@ impl Provider for OpenAi {
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async {
+            self.refresh_if_stale().await?;
             if !self.is_oauth() {
                 return Ok(None);
             }
@@ -628,8 +663,9 @@ impl Provider for OpenAi {
             let Some(storage) = self.storage.clone() else {
                 return Ok(());
             };
-            let resolved = smol::unblock(move || auth::resolve(&storage)).await?;
+            let (resolved, tokens) = smol::unblock(move || auth::resolve(&storage)).await?;
             *self.auth.lock().unwrap() = resolved;
+            *self.tokens.lock().unwrap() = tokens;
             debug!("reloaded OpenAI auth from storage");
             Ok(())
         })

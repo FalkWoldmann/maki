@@ -21,10 +21,13 @@ use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 use super::shared;
 
 pub(crate) const BEARER_TOKEN_ENV: &str = "AWS_BEARER_TOKEN_BEDROCK";
+const CONTAINER_CREDENTIALS_URI_ENV: &str = "AWS_CONTAINER_CREDENTIALS_FULL_URI";
 const BEDROCK_API_VERSION: &str = "bedrock-2023-05-31";
 const MIN_EVENTSTREAM_FRAME: usize = 16;
 const CONTAINER_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
+const CONTAINER_CREDENTIALS_PENDING: &str =
+    "Bedrock container credentials were not fetched before signing the request";
 
 fn io_error(
     kind: std::io::ErrorKind,
@@ -42,6 +45,8 @@ enum AuthKind {
         // epoch seconds; Some only for temporary creds from the container endpoint.
         expires_at: Option<u64>,
     },
+    /// Fetched on the first request.
+    ContainerPending,
     Bearer {
         token: String,
     },
@@ -87,16 +92,9 @@ fn resolve_bedrock_auth() -> Result<BedrockAuth, AgentError> {
             session_token,
             expires_at: None,
         }
-    } else if let Ok(url) = env::var("AWS_CONTAINER_CREDENTIALS_FULL_URI") {
-        let (access_key, secret_key, session_token, expires_at) =
-            fetch_container_credentials(&url)?;
+    } else if env::var(CONTAINER_CREDENTIALS_URI_ENV).is_ok() {
         debug!("using Bedrock SigV4 auth from container credentials endpoint");
-        AuthKind::SigV4 {
-            access_key,
-            secret_key,
-            session_token,
-            expires_at,
-        }
+        AuthKind::ContainerPending
     } else {
         let profile = env::var("AWS_PROFILE").unwrap_or_else(|_| "default".into());
         let creds_path = env::var("HOME")
@@ -160,6 +158,19 @@ fn parse_aws_credentials_file(
             message: format!("profile '{profile}' not found or missing keys in credentials file"),
         }),
     }
+}
+
+fn fetch_container_auth() -> Result<AuthKind, AgentError> {
+    let url = env::var(CONTAINER_CREDENTIALS_URI_ENV).map_err(|_| AgentError::Config {
+        message: format!("{CONTAINER_CREDENTIALS_URI_ENV} is no longer set"),
+    })?;
+    let (access_key, secret_key, session_token, expires_at) = fetch_container_credentials(&url)?;
+    Ok(AuthKind::SigV4 {
+        access_key,
+        secret_key,
+        session_token,
+        expires_at,
+    })
 }
 
 fn fetch_container_credentials(
@@ -512,6 +523,7 @@ impl Bedrock {
     fn needs_refresh(&self) -> bool {
         let auth = self.auth.lock().unwrap();
         match &auth.kind {
+            AuthKind::ContainerPending => true,
             AuthKind::SigV4 {
                 expires_at: Some(exp),
                 ..
@@ -540,8 +552,9 @@ impl Provider for Bedrock {
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             if self.needs_refresh() {
-                debug!("Bedrock creds near expiry, refreshing before request");
-                self.reload_auth().await?;
+                debug!("Bedrock container creds missing or near expiry, fetching before request");
+                let kind = smol::unblock(fetch_container_auth).await?;
+                self.auth.lock().unwrap().kind = kind;
             }
             let auth = self.auth.lock().unwrap().clone();
             let requested_id = env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| model.id.clone());
@@ -618,6 +631,11 @@ impl Provider for Bedrock {
                     Some(vec![("Authorization".into(), format!("Bearer {token}"))])
                 }
                 AuthKind::None => None,
+                AuthKind::ContainerPending => {
+                    return Err(AgentError::Config {
+                        message: CONTAINER_CREDENTIALS_PENDING.into(),
+                    });
+                }
             };
 
             let mut builder = Request::builder()
