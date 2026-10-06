@@ -702,7 +702,7 @@ impl Provider for Bedrock {
 
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
-            let new_auth = resolve_bedrock_auth()?;
+            let new_auth = smol::unblock(resolve_bedrock_auth).await?;
             *self.auth.lock().unwrap() = new_auth;
             debug!("reloaded Bedrock auth from env");
             Ok(())
@@ -768,9 +768,80 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{ContentBlock, ProviderEvent};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use futures_lite::future;
     use test_case::test_case;
+
+    use super::*;
+    use crate::providers::{Timeouts, http_client};
+    use crate::test_support::{Canned, LOOPBACK, read_request, write_canned};
+    use crate::{ContentBlock, ProviderEvent};
+
+    const TEST_REGION: &str = "us-east-1";
+    const REGION_ENV: &str = "AWS_REGION";
+    const CONTAINER_URI_ENV: &str = "AWS_CONTAINER_CREDENTIALS_FULL_URI";
+    const COMPETING_AUTH_ENV: &[&str] = &[
+        BEARER_TOKEN_ENV,
+        "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    ];
+    const CONTAINER_CREDS: Canned = Canned::json(
+        200,
+        r#"{"AccessKeyId":"ASIA123","SecretAccessKey":"secret456","Token":"session789","Expiration":"2026-05-11T18:00:00Z"}"#,
+    );
+
+    /// The endpoint holds its answer until the executor thread has seen the
+    /// request arrive, so a reload that fetched inline would sit out
+    /// `CONTAINER_METADATA_TIMEOUT` and fail instead of passing.
+    #[test]
+    fn reload_auth_fetches_container_creds_off_the_executor() {
+        let listener = TcpListener::bind(LOOPBACK).unwrap();
+        let url = format!("http://{}/creds", listener.local_addr().unwrap());
+        unsafe {
+            for var in COMPETING_AUTH_ENV {
+                env::remove_var(var);
+            }
+            env::set_var(REGION_ENV, TEST_REGION);
+            env::set_var(CONTAINER_URI_ENV, url);
+        }
+        let (arrived_tx, arrived_rx) = flume::bounded(1);
+        let (release_tx, release_rx) = flume::bounded(1);
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            read_request(&stream);
+            arrived_tx.send(()).unwrap();
+            if release_rx.recv().is_ok() {
+                write_canned(&stream, &CONTAINER_CREDS);
+            }
+        });
+        let provider = Bedrock {
+            client: http_client(Timeouts::default()),
+            auth: Arc::new(Mutex::new(BedrockAuth {
+                kind: AuthKind::None,
+                region: TEST_REGION.into(),
+            })),
+            base_url: None,
+            top_p: None,
+        };
+
+        let release = async {
+            arrived_rx.recv_async().await.unwrap();
+            release_tx.send(()).unwrap();
+            future::pending().await
+        };
+
+        smol::block_on(future::or(provider.reload_auth(), release)).unwrap();
+        assert!(matches!(
+            provider.auth.lock().unwrap().kind,
+            AuthKind::SigV4 {
+                expires_at: Some(_),
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn sigv4_signing_encodes_path_segments() {

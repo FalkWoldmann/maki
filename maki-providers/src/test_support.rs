@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::providers::plugin::{self, DeclAuthority, ProviderDecl, ProviderHooks, Registration};
 
-const LOOPBACK: &str = "127.0.0.1:0";
+pub(crate) const LOOPBACK: &str = "127.0.0.1:0";
 const REASON_PHRASE: &str = "Recorded";
 const CONTENT_LENGTH: &str = "content-length";
 const AUTHORIZATION: &str = "authorization";
@@ -166,7 +166,7 @@ fn route<'s>(script: &'s [Canned], served: &mut [bool], path: &str) -> &'s Canne
     &script[index]
 }
 
-fn read_request(stream: &TcpStream) -> Recorded {
+pub(crate) fn read_request(stream: &TcpStream) -> Recorded {
     let mut reader = BufReader::new(stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line).expect(IO_FAILED);
@@ -201,7 +201,7 @@ fn read_request(stream: &TcpStream) -> Recorded {
     }
 }
 
-fn write_canned(mut stream: &TcpStream, canned: &Canned) {
+pub(crate) fn write_canned(mut stream: &TcpStream, canned: &Canned) {
     let mut response = format!(
         "HTTP/1.1 {} {REASON_PHRASE}\r\n{CONTENT_LENGTH}: {}\r\nconnection: close\r\n",
         canned.status,
