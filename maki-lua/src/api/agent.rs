@@ -862,7 +862,7 @@ async fn prompt(
 ) -> LuaResult<Pair<Table>> {
     let inner = Arc::clone(&this.inner);
     drop(this);
-    let mut guard = inner.lock().await;
+    let mut guard = inner.lock_arc().await;
     let s = &mut *guard;
     if s.closed {
         return Ok((None, Some(SESSION_CLOSED_ERR.to_owned())));
@@ -880,22 +880,6 @@ async fn prompt(
     }
 
     let history_len = s.history.len();
-    let mut agent = Agent::new(
-        s.params.clone(),
-        AgentRunParams {
-            history: &mut s.history,
-            gauge: &mut s.gauge,
-            event_tx: s.sub_event_tx.clone(),
-            context: Arc::clone(&s.context),
-        },
-    )
-    .with_user_response_rx(Arc::clone(&s.answer_rx))
-    .with_interrupt_source(Arc::clone(&s.inbox) as Arc<dyn maki_agent::InterruptSource>)
-    .with_loaded_instructions(s.loaded_instructions.clone())
-    .with_cancel(s.child_cancel.clone())
-    .with_mcp(s.mcp.clone())
-    .with_local_tools(Arc::clone(&s.local_tools));
-
     let input = AgentInput {
         message,
         mode: AgentMode::Build,
@@ -908,8 +892,31 @@ async fn prompt(
         prompt: None,
         source: InputSource::Plugin,
     };
-    let result = agent.run(input).await;
-    drop(agent);
+    // Off the Lua thread, which every plugin shares. Dropping the task, as an
+    // abandoned prompt does, cancels the run.
+    let (mut guard, result) = smol::spawn(async move {
+        let s = &mut *guard;
+        let result = Agent::new(
+            s.params.clone(),
+            AgentRunParams {
+                history: &mut s.history,
+                gauge: &mut s.gauge,
+                event_tx: s.sub_event_tx.clone(),
+                context: Arc::clone(&s.context),
+            },
+        )
+        .with_user_response_rx(Arc::clone(&s.answer_rx))
+        .with_interrupt_source(Arc::clone(&s.inbox) as Arc<dyn maki_agent::InterruptSource>)
+        .with_loaded_instructions(s.loaded_instructions.clone())
+        .with_cancel(s.child_cancel.clone())
+        .with_mcp(s.mcp.clone())
+        .with_local_tools(Arc::clone(&s.local_tools))
+        .run(input)
+        .await;
+        (guard, result)
+    })
+    .await;
+    let s = &mut *guard;
     // Only this call's messages count: older turns may hold stale preamble
     // text, and the agent loop's empty-response retry leaves a synthetic
     // "(empty)" assistant marker that must not pass for a real response.
