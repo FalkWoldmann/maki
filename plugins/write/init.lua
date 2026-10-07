@@ -1,6 +1,11 @@
 local shorten_path = require("maki.shorten_path")
 local ToolView = require("maki.tool_view")
 
+-- Layers (like the lsp plugin) return text about the file just written, which
+-- the model reads after the summary. A layer cannot change what was written,
+-- only report on it, so it pays what reading the file costs.
+local feedback = maki.api.declare_slot("write.feedback", function() end, { capability = { "fs_read" } })
+
 local DESCRIPTION = [[Write content to a file, replacing existing content.
 
 - Creates parent directories if needed.
@@ -94,6 +99,10 @@ maki.api.register_tool({
     local byte_count = #content
     local rel = shorten_path(path)
     local llm_output = string.format("wrote %d bytes to %s", byte_count, rel)
+    local note = feedback(path)
+    if note then
+      llm_output = llm_output .. "\n\n" .. note
+    end
     local annotation = string.format("%d bytes", byte_count)
 
     return {

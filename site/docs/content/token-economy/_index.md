@@ -63,6 +63,8 @@ read × 300  → 300 files          filter in python
 in context forever               1 turn, 1 line in context
 ```
 
+**lsp** puts compiler errors into the result of the edit that caused them. After a write to a Rust file, it waits for rust-analyzer's `cargo check` and adds the errors in that file, plus any new ones the edit caused elsewhere. The model learns the build broke without a `cargo check` turn, and reads a few lines instead of the whole compiler log. It ships off. Turn it on with `plugins.lsp = { enabled = true }` and keep `rust-analyzer` on your `PATH`. Its options are in [Configuration](/docs/configuration/#plugins-lsp).
+
 **Compaction** resets the multiplier when a session runs long: older turns are summarized and dropped. [Context](/docs/context/#when-the-window-fills) has the details.
 
 ## Watching it work

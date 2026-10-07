@@ -226,7 +226,7 @@ Every field also has an environment variable, shown in the Env column, and the v
 
 ## Plugins
 
-The `plugins` table turns plugins on or off and passes options to them. All bundled plugins are on by default. Set `enabled = false` to turn one off.
+The `plugins` table turns plugins on or off and passes options to them. Bundled plugins are on by default. These ship off until you set `enabled = true`: `completion`, `lsp`. Set `enabled = false` to turn any other off.
 
 A plugin that is off never loads, so its tool name is free for one of your own plugins to take. Permission rules are keyed by the tool name alone, and names such as `bash`, `write`, and `task` already have rules in maki. A plugin that takes one of them inherits those rules, together with any "always allow" you saved. Maki warns you at load when this happens.
 
@@ -298,6 +298,13 @@ maki.setup({
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `max_file_size_mb` | integer | `2` | 1 | Refuse to index files larger than this many MB. |
+
+### `plugins.lsp`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `command` | string | `"rust-analyzer"` | - | Language server executable, looked up on `PATH`. |
+| `wait_ms` | integer | `15000` | 0 | How long an edit waits for `cargo check` before returning without diagnostics. |
 
 ### `plugins.read`
 

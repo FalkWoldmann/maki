@@ -3179,6 +3179,7 @@ impl LuaRuntime {
         }
         crate::api::fs::clear_plugin_files(plugin);
         crate::api::net::close_plugin_conns(plugin);
+        crate::api::process::kill_plugin_processes(plugin);
         let revision_guard = self.drop_plugin_keys(plugin);
         with_packs(&self.lua, |packs| packs.active.remove(plugin));
         if let Some(mut store) = self.lua.app_data_mut::<KeymapStore>() {

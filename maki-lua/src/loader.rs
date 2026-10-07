@@ -153,6 +153,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/completion"),
     },
     BundledPlugin {
+        name: "lsp",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/lsp"),
+    },
+    BundledPlugin {
         name: "view_image",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
     },

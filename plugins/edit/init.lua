@@ -8,6 +8,11 @@ local preserve_line_endings = require("edit_helpers").preserve_line_endings
 local SNIPPET_MAX_CHARS = 32
 local FALLBACK_VIEW_LINES = 10
 
+-- Layers (like the lsp plugin) return text about the file just written, which
+-- the model reads after the summary. A layer cannot change what was written,
+-- only report on it, so it pays what reading the file costs.
+local feedback = maki.api.declare_slot("edit.feedback", function() end, { capability = { "fs_read" } })
+
 local DIFF_OLD = { style = "diff_old", prefix = "- ", sign = "diff_old_sign", nr = "diff_old_line_nr" }
 local DIFF_NEW = { style = "diff_new", prefix = "+ ", sign = "diff_new_sign", nr = "diff_new_line_nr" }
 
@@ -222,8 +227,9 @@ local function apply_edit(path, transform)
 end
 
 local function diff_result(edit_result, summary)
+  local note = feedback(edit_result.path)
   return {
-    llm_output = summary,
+    llm_output = note and (summary .. "\n\n" .. note) or summary,
     diff_path = edit_result.path,
     diff_before = edit_result.before,
     diff_after = edit_result.after,

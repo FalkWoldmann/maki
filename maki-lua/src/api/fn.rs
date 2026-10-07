@@ -17,6 +17,7 @@ use mlua::{Function, Lua, RegistryKey, Result as LuaResult, Table, Value};
 use shell_words::join as shell_join;
 
 use crate::api::fs::expand_tilde;
+use crate::api::process::{spawn__doc, spawn__register};
 use crate::api::util::command::{UiAction, ui_roundtrip, ui_send};
 use crate::api::util::pair::{Pair, err_pair, try_pair};
 use crate::plugin_permissions::{Permission, PluginPermissions, denied_error};
@@ -1415,7 +1416,7 @@ lua_table! {
     ), DOCS [
         jobstart(perms, plugin, fs_write), jobstop(perms, plugin), jobforget(perms, plugin),
         jobwait(perms, plugin), jobinfo(perms, plugin), joblist(perms, plugin),
-        jobattach(perms, plugin), jobfind(perms, plugin),
+        jobattach(perms, plugin), jobfind(perms, plugin), spawn(perms, plugin),
         executable(perms),
         winsaveview(tx), winrestview(tx),
     ]

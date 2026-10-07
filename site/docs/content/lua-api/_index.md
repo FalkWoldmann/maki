@@ -116,6 +116,7 @@ The rules:
 | [`maki.base64`](#maki-base64) | Base64 encoding and decoding, modelled after `vim.base64`. |
 | [`maki.env`](#maki-env) | Paths to maki's own directories (config, state, logs, legacy). |
 | [`maki.fn`](#maki-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
+| [`maki.fn.Process`](#maki-fn-Process) | A child process started by `maki.fn.spawn`. |
 | [`maki.fs`](#maki-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
 | [`maki.image`](#maki-image) | Small building blocks for working with images: probe metadata, decode |
 | [`maki.image.Image`](#maki-image-Image) | A decoded image you can inspect, resize, and re-encode. |
@@ -2330,6 +2331,49 @@ end
 
 ---
 
+### `maki.fn.spawn()` {#maki-fn-spawn}
+
+```lua
+maki.fn.spawn({argv}, {opts?})
+```
+
+Start {argv} with its stdin and stdout piped to you, for a child that
+speaks a protocol there, such as a language server. Its stderr is
+discarded. For a command whose output you read line by line, use
+`jobstart`.
+
+`read` and `write` yield, so a child that stays up belongs in a
+`maki.async.spawn` task. It is killed, together with any process it
+started, on `proc:kill()`, when the handle is garbage collected, and
+when the plugin unloads.
+
+{opts} fields:
+  `cwd` (string) Working directory (tilde is expanded).
+  `env` (table) Extra environment variables, `{ VAR = "value" }`.
+
+Requires the `run` [plugin permission](#plugin-permissions).
+
+**Parameters:**
+
+- `{argv}` (`table`) Program and arguments, like `{ "rust-analyzer" }`. No shell is involved.
+- `{opts?}` (`table?`) Options (see above).
+
+**Returns:** ([`maki.fn.Process?`](#maki-fn-Process), `string?`) The process, or nil plus an error string.
+
+**Example:**
+
+```lua
+maki.async.spawn(function()
+  local proc, err = maki.fn.spawn({ "cat" })
+  if not proc then return maki.log.error(err) end
+  proc:write("hello\n")
+  print(proc:read()) -- hello
+  proc:kill()
+end)
+```
+
+---
+
 ### `maki.fn.executable()` {#maki-fn-executable}
 
 ```lua
@@ -2409,6 +2453,77 @@ the bottom re-pins it so streaming output keeps following.
 ```lua
 maki.fn.winrestview({ topline = 1 })
 ```
+
+
+## maki.fn.Process {#maki-fn-Process}
+
+A child process started by `maki.fn.spawn`.
+
+`read` and `write` yield until done and can run at the same time.
+The process is killed on `:kill()`, when the handle is garbage
+collected, and when the plugin unloads.
+
+---
+
+### `Process:read()` {#Process-read}
+
+```lua
+Process:read()
+```
+
+Wait for output and return what arrived, at most 64 KiB. Returns
+`nil, nil` once the child has closed its stdout.
+
+Only one read at a time: a second `read()` while one is waiting returns
+an error. A read and a write can run at the same time.
+
+**Returns:** (`string?`, `string?`) Bytes read, or nil plus an error string, or nil, nil at end of stream.
+
+**Example:**
+
+```lua
+local chunk, err = proc:read()
+if err then return maki.log.error(err) end
+if not chunk then print("process exited") end
+```
+
+---
+
+### `Process:write()` {#Process-write}
+
+```lua
+Process:write({data})
+```
+
+Send {data} to the child's stdin and wait until all of it is written.
+Writes made while one is in flight wait their turn, so each goes out
+whole and in call order. A write that is cancelled or fails partway
+kills the process, because the child would read the next write as the
+rest of the cut one.
+
+**Parameters:**
+
+- `{data}` (`string`) Bytes to send.
+
+**Returns:** (`boolean?`, `string?`) `true`, or nil plus an error string.
+
+**Example:**
+
+```lua
+local ok, err = proc:write(maki.json.encode(msg) .. "\n")
+if not ok then return maki.log.error(err) end
+```
+
+---
+
+### `Process:kill()` {#Process-kill}
+
+```lua
+Process:kill()
+```
+
+Kill the process and any process it started. A read in flight ends
+with `nil, nil` or an error. Extra calls do nothing.
 
 
 ## maki.fs {#maki-fs}

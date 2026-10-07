@@ -15,6 +15,7 @@ pub(crate) mod net;
 pub(crate) mod options;
 pub(crate) mod pack;
 pub(crate) mod plan;
+pub(crate) mod process;
 pub(crate) mod provider;
 pub(crate) mod session;
 pub(crate) mod slot;

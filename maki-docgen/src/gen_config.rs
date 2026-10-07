@@ -4,8 +4,8 @@ use std::sync::Arc;
 use maki_agent::tools::ToolRegistry;
 use maki_config::{
     AgentConfig, ConfigField, DEFAULT_MAX_LOG_FILES, DEFAULT_MAX_OUTPUT_LINES,
-    DEFAULT_MOUSE_SCROLL_LINES, MIN_TOOL_OUTPUT_LINES, NetConfig, ProviderConfig, StorageConfig,
-    TOP_LEVEL_FIELDS, TelemetryConfig, ToolOutputLines, UiConfig,
+    DEFAULT_MOUSE_SCROLL_LINES, MIN_TOOL_OUTPUT_LINES, NetConfig, OPTIONAL_BUILTINS,
+    ProviderConfig, StorageConfig, TOP_LEVEL_FIELDS, TelemetryConfig, ToolOutputLines, UiConfig,
 };
 use maki_lua::{PluginHost, PluginOptionSpecs};
 
@@ -352,11 +352,17 @@ All fields are optional. Typos in field names cause an error right away.
     write_telemetry_section(&mut out);
 
     writeln!(out, "## Plugins\n").unwrap();
+    let optional = OPTIONAL_BUILTINS
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
     writeln!(
         out,
         "The `plugins` table turns plugins on or off and passes options to \
-         them. All bundled plugins are on by default. Set \
-         `enabled = false` to turn one off.\n\n\
+         them. Bundled plugins are on by default. These ship off until you \
+         set `enabled = true`: {optional}. Set `enabled = false` to turn any \
+         other off.\n\n\
          A plugin that is off never loads, so its tool name is free for one \
          of your own plugins to take. Permission rules are keyed by the tool \
          name alone, and names such as `bash`, `write`, and `task` already \
