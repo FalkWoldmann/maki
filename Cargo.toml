@@ -16,6 +16,9 @@ rust-version = "1.99"
 name = "maki"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 maki-ui = { workspace = true }
 maki-agent = { workspace = true }
@@ -74,6 +77,9 @@ authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/tontinton/maki"
 rust-version = "1.99"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
 
 [workspace.dependencies]
 maki-agent = { path = "maki-agent" }

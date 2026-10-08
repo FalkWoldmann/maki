@@ -70,3 +70,6 @@ harness = false
 [[bench]]
 name = "reflow"
 harness = false
+
+[lints]
+workspace = true
