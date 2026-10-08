@@ -98,3 +98,6 @@ test-case = { workspace = true }
 [[bench]]
 name = "luau_perf"
 harness = false
+
+[lints]
+workspace = true
