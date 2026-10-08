@@ -181,7 +181,7 @@ end
 
 -- Append {content} with line numbers, then syntax-highlight it for {ext}
 -- asynchronously. Returns false when {content} is empty.
-function ToolView:set_highlight(content, ext)
+function ToolView:set_highlight(content: string, ext)
   ext = ext or "md"
   if content:sub(-1) == "\n" then
     content = content:sub(1, -2)

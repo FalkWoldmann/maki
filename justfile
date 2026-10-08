@@ -31,6 +31,11 @@ fmt:
     cargo fmt --all
     stylua plugins/
 
+# Same command as CI. lute reads `plugins/.config.luau` from the working directory.
+# Not part of `ci` yet: it needs the lute nightly pinned in `.github/workflows/rust.yml`.
+check-lua:
+    cd plugins && lute check $(find . -name '*.lua')
+
 pylint:
     ruff check scripts/
     ty check scripts/
