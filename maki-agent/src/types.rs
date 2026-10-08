@@ -359,10 +359,12 @@ impl ToolOutput {
     }
 
     /// The text a [`HookStage::Output`] hook may read and rewrite, or `None`
-    /// when the output has none to lend. Only a plain-text shape with no
-    /// `state` qualifies: the other variants render from their own fields, and
-    /// a `state` sidecar is saved with the session and re-rendered on restore,
-    /// so text a hook redacted would come back verbatim after a restart.
+    /// when the output has none to lend. A diff lends its summary, which is
+    /// all the model reads of it while the UI draws from `before`/`after`. A
+    /// plain-text shape lends its text unless it carries `state`: that sidecar
+    /// is saved with the session and re-rendered on restore, so text a hook
+    /// redacted would come back verbatim after a restart. The other variants
+    /// render from their own fields.
     ///
     /// One accessor for both directions, so a getter and a setter can never
     /// drift into letting a hook read text it cannot write back.
@@ -373,6 +375,7 @@ impl ToolOutput {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) if t.state.is_none() => {
                 Some(&mut t.text)
             }
+            Self::Diff { summary, .. } => Some(summary),
             _ => None,
         }
     }
@@ -1284,15 +1287,12 @@ mod tests {
         }
     }
 
-    #[test_case(ToolOutput::Plain(FILTERABLE_TEXT.into()),   Some(FILTERABLE_TEXT) ; "plain_without_state_lends_text")]
-    #[test_case(ToolOutput::Plain(text_with_state()),        None                  ; "plain_with_state_withholds_text")]
-    #[test_case(ToolOutput::Markdown(text_with_state()),     None                  ; "markdown_with_state_withholds_text")]
-    #[test_case(ToolOutput::ReadDir(FILTERABLE_TEXT.into()), Some(FILTERABLE_TEXT) ; "read_dir_without_state_lends_text")]
-    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: FILTERABLE_TEXT.into() }, None ; "diff_withholds_text")]
-    fn filterable_text_needs_text_to_be_the_sole_representation(
-        mut output: ToolOutput,
-        expected: Option<&str>,
-    ) {
+    #[test_case(ToolOutput::Plain(FILTERABLE_TEXT.into()),   Some(FILTERABLE_TEXT) ; "plain_text_is_rewritable")]
+    #[test_case(ToolOutput::Plain(text_with_state()),        None                  ; "plain_text_with_saved_state_is_not")]
+    #[test_case(ToolOutput::Markdown(text_with_state()),     None                  ; "markdown_with_saved_state_is_not")]
+    #[test_case(ToolOutput::ReadDir(FILTERABLE_TEXT.into()), Some(FILTERABLE_TEXT) ; "directory_listing_is_rewritable")]
+    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: FILTERABLE_TEXT.into() }, Some(FILTERABLE_TEXT) ; "diff_summary_is_rewritable")]
+    fn which_outputs_a_hook_may_rewrite(mut output: ToolOutput, expected: Option<&str>) {
         assert_eq!(output.filterable_text_mut().map(|t| t.as_str()), expected);
     }
 

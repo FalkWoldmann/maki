@@ -1140,6 +1140,10 @@ mod tests {
     const HOOK_DIFF_COMMAND: &str = "apply";
     const HOOK_DIFF_PATH: &str = "/tmp/diffed.txt";
     const HOOK_DIFF_SUMMARY: &str = "1 file changed";
+    const HOOK_DIFF_BEFORE: &str = "fn main() {}\n";
+    const HOOK_DIFF_AFTER: &str = "fn main() { x }\n";
+    const HOOK_COMPILER_ERRORS: &str = "error[E0425]: cannot find value `x` in this scope";
+    const HOOK_TODO_COMMAND: &str = "todo";
     const HOOK_ESCAPED_PATH: &str = "/tmp/not-the-plan.md";
     const TEST_PLUGIN_SOURCE: &str = "lua:test";
     const START_PROBE_NAME: &str = "start_probe";
@@ -1319,18 +1323,19 @@ mod tests {
         format!("ran {command}")
     }
 
-    /// One command answers with a shape the UI renders from fields, the one
-    /// kind of output a hook may not touch.
+    /// `apply` answers like `edit` does, with a diff. `todo` answers with a
+    /// todo list, which the UI draws from its items alone.
     fn output_of(command: &str) -> ToolOutput {
-        if command == HOOK_DIFF_COMMAND {
-            return ToolOutput::Diff {
+        match command {
+            HOOK_DIFF_COMMAND => ToolOutput::Diff {
                 path: HOOK_DIFF_PATH.to_owned(),
-                before: String::new(),
-                after: String::new(),
+                before: HOOK_DIFF_BEFORE.to_owned(),
+                after: HOOK_DIFF_AFTER.to_owned(),
                 summary: HOOK_DIFF_SUMMARY.to_owned(),
-            };
+            },
+            HOOK_TODO_COMMAND => ToolOutput::TodoList(Vec::new()),
+            _ => ToolOutput::Plain(ran(command).into()),
         }
-        ToolOutput::Plain(ran(command).into())
     }
 
     /// Shared by the mock and the assertion, so the test cannot pass against
@@ -1748,16 +1753,58 @@ mod tests {
         });
     }
 
-    /// An output the UI renders from fields carries no prose to lend, and
-    /// editing it would desync the fields from the text.
+    fn append_compiler_errors(stage: HookStage, value: &Value) -> Verdict {
+        match stage {
+            HookStage::Input => Verdict::Unchanged,
+            HookStage::Output => {
+                let summary = value[OUTPUT_TEXT].as_str().unwrap_or_default();
+                Verdict::Replaced(
+                    serde_json::json!({ OUTPUT_TEXT: format!("{summary}\n{HOOK_COMPILER_ERRORS}") }),
+                )
+            }
+        }
+    }
+
+    /// What an LSP plugin does after an edit: the model reads the compiler
+    /// errors under the summary, and the UI still draws the same diff.
     #[test]
-    fn a_rendered_output_skips_the_output_stage() {
+    fn an_edit_hook_appends_to_the_diff_summary() {
         smol::block_on(async {
-            let (ctx, hook) = plain_hooked_ctx(RecordingHook::answering(deny_the_output));
+            let (ctx, _hook) = plain_hooked_ctx(RecordingHook::answering(append_compiler_errors));
             let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_DIFF_COMMAND)).await;
 
+            let ToolOutput::Diff {
+                before,
+                after,
+                summary,
+                ..
+            } = done.output.as_ref()
+            else {
+                panic!("the hook turned the diff into {:?}", done.output);
+            };
+            assert_eq!(
+                *summary,
+                format!("{HOOK_DIFF_SUMMARY}\n{HOOK_COMPILER_ERRORS}")
+            );
+            assert_eq!(before, HOOK_DIFF_BEFORE);
+            assert_eq!(after, HOOK_DIFF_AFTER);
             assert!(!done.is_error);
-            assert_eq!(done.output.as_text(), HOOK_DIFF_SUMMARY);
+        });
+    }
+
+    /// A todo list has no text of its own, the UI draws it from its items. So
+    /// the output hook never runs on it, not even one that would deny it.
+    #[test]
+    fn a_todo_list_skips_the_output_hook() {
+        smol::block_on(async {
+            let (ctx, hook) = plain_hooked_ctx(RecordingHook::answering(deny_the_output));
+            let done = dispatch(&ctx, HOOK_TOOL_NAME, &call_input(HOOK_TODO_COMMAND)).await;
+
+            assert!(!done.is_error);
+            assert_eq!(
+                done.output.as_text(),
+                output_of(HOOK_TODO_COMMAND).as_text()
+            );
             assert_eq!(
                 hook.stages(),
                 vec![(HookStage::Input, Authority::Unbounded)]
