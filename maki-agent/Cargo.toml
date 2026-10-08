@@ -45,3 +45,5 @@ maki-config = { workspace = true, features = ["test-util"] }
 test-case = { workspace = true }
 tempfile = { workspace = true }
 
+[lints]
+workspace = true

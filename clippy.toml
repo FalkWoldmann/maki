@@ -1,5 +1,32 @@
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-unwrap-in-tests = true
+allow-useless-vec-in-tests = true
+
+avoid-breaking-exported-api = false
+
+await-holding-invalid-types = [
+  { path = "tracing::span::Entered", reason = "span guards are thread-local; use `.instrument(span)` or `#[tracing::instrument]`" },
+  { path = "tracing::span::EnteredSpan", reason = "span guards are thread-local; use `.instrument(span)` or `#[tracing::instrument]`" },
+]
+
+disallowed-macros = [
+  { path = "anyhow::anyhow", reason = "use `.context()`/`.with_context()` on Option/Result, or `bail!`/`ensure!`" },
+]
+
 disallowed-methods = [
   { path = "uuid::Uuid::new_v4", reason = "use maki_storage::id::MakiId::generate (base58-encoded UUIDv7)", allow-invalid = true },
   { path = "uuid::Uuid::new_v7", reason = "use maki_storage::id::MakiId::generate (base58-encoded UUIDv7)", allow-invalid = true },
   { path = "uuid::Uuid::now_v7", reason = "use maki_storage::id::MakiId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "std::thread::sleep", reason = "blocks an executor thread; use `smol::Timer::after`" },
+  { path = "futures::executor::block_on", reason = "deadlocks inside the executor; `.await` it", allow-invalid = true },
+  { path = "futures_executor::block_on", reason = "deadlocks inside the executor; `.await` it", allow-invalid = true },
+  { path = "std::net::TcpStream::connect", reason = "blocking socket; use `smol::net::TcpStream`" },
+  { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "blocking DNS lookup; use `smol::net::resolve`" },
+  { path = "std::sync::mpsc::Receiver::recv", reason = "blocks the thread; use `flume` or `async-channel`" },
+  { path = "rustls::ClientConfig::dangerous", reason = "custom verifiers bypass TLS validation", allow-invalid = true },
+  { path = "serde_json::Deserializer::disable_recursion_limit", reason = "deeply nested untrusted JSON can overflow the stack", allow-invalid = true },
 ]
