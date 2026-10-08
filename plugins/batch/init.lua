@@ -440,7 +440,7 @@ end
 -- comes back with the partial output the sweep could not know about.
 function Batch:settle(c, status, output)
   if TERMINAL[c.status] and not c.swept then
-    error(string.format(RESETTLE_FMT, c.tool, c.status, status))
+    error(string.format(RESETTLE_FMT, tostring(c.tool), c.status, status))
   end
   c.swept = nil
   c.status = status

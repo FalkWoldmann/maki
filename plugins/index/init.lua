@@ -171,7 +171,7 @@ Return a compact overview of a source file: imports, type definitions, function 
     return render_header(input.path)
   end,
   restore = function(input, output, _is_error, ctx)
-    local meta = input.path and maki.fs.metadata(input.path)
+    local meta = input.path and maki.fs.metadata(input.path :: string)
     if meta and meta.is_dir then
       return { body = dir_listing.view(output, ctx) }
     end

@@ -291,7 +291,7 @@ maki.api.register_tool({
   },
   permission = "run",
   permission_scopes = function(input)
-    local command = input.command
+    local command: string? = input.command
     if not command or command:match("^%s*$") then
       return nil
     end

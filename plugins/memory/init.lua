@@ -20,7 +20,7 @@ local function memories_path_suffix()
   return "projects/" .. helpers.project_id(root) .. "/memories"
 end
 
-local function legacy_dir_if_exists(suffix)
+local function legacy_dir_if_exists(suffix): string?
   local legacy = maki.env.legacy_dir()
   if not legacy then
     return nil

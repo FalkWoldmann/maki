@@ -7445,7 +7445,7 @@ function ToolView:append_text(text)
 
 -- Append {content} with line numbers, then syntax-highlight it for {ext}
 -- asynchronously. Returns false when {content} is empty.
-function ToolView:set_highlight(content, ext)
+function ToolView:set_highlight(content: string, ext)
 
 -- Content rows on screen, for callers with their own per-row click targets. A
 -- single hidden line is drawn as itself instead of a notice, so it counts as

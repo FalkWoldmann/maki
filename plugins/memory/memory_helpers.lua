@@ -50,7 +50,7 @@ function M.project_id(path)
   return base .. "-" .. M.fnv1a_64(path)
 end
 
-function M.safe_resolve(memories_dir, relative)
+function M.safe_resolve(memories_dir, relative: string?)
   if not relative or relative == "" then
     return nil, "path is required"
   end
