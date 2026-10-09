@@ -83,6 +83,7 @@ pub fn api_docs() -> Vec<&'static ModuleDoc> {
         &api::session::DOCS,
         &api::top::DOCS,
         &api::top::TIMER_DOCS,
+        &api::system::SYSTEM_DOCS,
         &api::task::DOCS,
         &api::text::DOCS,
         &api::treesitter::DOCS,

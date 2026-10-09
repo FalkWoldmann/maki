@@ -460,7 +460,7 @@ lua_table! {
     ///     label = "Commit and implement",
     ///     desc = "Commit the plan file first, then implement it",
     ///     handler = function(opts)
-    ///       maki.fn.system({ "git", "commit", "-am", "plan" })
+    ///       assert(maki.system({ "git", "commit", "-am", "plan" })):wait()
     ///       maki.session.set_mode("build", { session = opts.session })
     ///       maki.session.prompt("Implement " .. opts.path, { session = opts.session })
     ///     end,

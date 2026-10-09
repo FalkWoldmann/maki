@@ -243,6 +243,9 @@ const STRING_NAME_SCHEMA: &str = r#"{
 }"#;
 const JOB_BAD_CWD: &str = "~/definitely/not/a/dir";
 const JOB_BAD_CWD_ERR_PREFIX: &str = "cwd is not a directory: ";
+const SYSTEM_REPLY_BYTES: usize = 1 << 20;
+const SYSTEM_UNLOAD_PLUGIN: &str = "system_unload";
+const SYSTEM_UNLOADING_ERR: &str = "plugin is unloading";
 const JOB_UNKNOWN_ID: u32 = 999_999;
 const JOBWAIT_UNKNOWN_ERR: &str = "jobwait: unknown job id or already waited";
 const NIL_WITHOUT_JOBS_ERR: &str =
@@ -7184,4 +7187,129 @@ fn a_ui_roundtrip_on_a_headless_host_fails_fast() {
 
     let reply = exec_tool(&reg, "ask_ui", json!({})).unwrap();
     assert_eq!(reply, format!("nil {NO_UI_ERR}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn system_process_outlives_the_tool_call_that_started_it() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"
+local server
+maki.api.register_tool({{
+    name = "system_start",
+    description = "starts cat",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function()
+        server = assert(maki.system({{ "cat" }}, {{ stdin = true }}))
+        return "started"
+    end,
+}})
+maki.api.register_tool({{
+    name = "system_finish",
+    description = "talks to the cat started earlier",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function()
+        assert(server:write("still here"))
+        assert(server:write(nil))
+        return server:wait().stdout
+    end,
+}})
+"#
+    );
+    host.load_source("system_owner", &src).unwrap();
+    assert_eq!(
+        exec_tool(&reg, "system_start", json!({})).unwrap(),
+        "started"
+    );
+    assert_eq!(
+        exec_tool(&reg, "system_finish", json!({})).unwrap(),
+        "still here"
+    );
+}
+
+/// The `vim/lsp/rpc.lua` pattern: answer from inside the stdout callback.
+/// The reply is far bigger than the pipes, and `cat` echoes it back while
+/// the callback runs, so a write that waited there would never finish.
+#[cfg(unix)]
+#[test]
+fn system_large_write_from_its_own_callback_goes_through() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = format!(
+        r#"maki.api.register_tool({{
+            name = "system_reply",
+            description = "replies from the stdout callback",
+            schema = {MINIMAL_SCHEMA},
+            audiences = {{ "main" }},
+            handler = function()
+                local obj, total, replied = nil, 0, false
+                obj = assert(maki.system({{ "cat" }}, {{
+                    stdin = true,
+                    stdout = function(_, data)
+                        if not data then return end
+                        total = total + #data
+                        if not replied then
+                            replied = true
+                            assert(obj:write(string.rep("x", {SYSTEM_REPLY_BYTES})))
+                            assert(obj:write(nil))
+                        end
+                    end,
+                }}))
+                assert(obj:write("ping"))
+                local done = obj:wait()
+                return total .. " code=" .. done.code
+            end
+        }})"#,
+    );
+    host.load_source("system_reply", &src).unwrap();
+    let out = exec_tool(&reg, "system_reply", json!({})).unwrap();
+    assert_eq!(out, format!("{} code=0", SYSTEM_REPLY_BYTES + "ping".len()));
+}
+
+/// The unload kills the process, and the plugin's `on_cancel` hook, which
+/// still runs, cannot start another that nothing would kill.
+#[cfg(unix)]
+#[test]
+fn unloading_plugin_kills_its_system_processes() {
+    let (reg, host) = spawn_host();
+    let src = format!(
+        r#"
+maki.api.register_tool({{
+    name = "system_server",
+    description = "starts a long-running process",
+    schema = {MINIMAL_SCHEMA},
+    audiences = {{ "main" }},
+    handler = function()
+        return tostring(assert(maki.system({{ "sleep", "30" }}, {{}}, function() end)).pid)
+    end,
+}})
+maki.async.spawn(function()
+    maki.async.on_cancel(function()
+        local obj, err = maki.system({{ "true" }})
+        assert(obj == nil and err == "{SYSTEM_UNLOADING_ERR}")
+        maki.api.exec_autocmds("SpawnCancelHook")
+    end)
+    maki.api.exec_autocmds("SpawnArmed")
+    maki.async.sleep(3600000)
+end)
+"#
+    );
+    host.load_source(SYSTEM_UNLOAD_PLUGIN, &src).unwrap();
+    let pid = exec_tool(&reg, "system_server", json!({})).unwrap();
+    let pid = Pid::from_raw(pid.parse().unwrap()).unwrap();
+    poll_until("the spawn arms its hook", || {
+        (spawn_probe(&reg).armed > 0).then_some(())
+    });
+
+    host.unload(SYSTEM_UNLOAD_PLUGIN).unwrap();
+    poll_until("the hook is refused a new process", || {
+        (spawn_probe(&reg).cancel_hooks > 0).then_some(())
+    });
+    poll_until("the unload kills the process group", || {
+        test_kill_process_group(pid).is_err().then_some(())
+    });
 }

@@ -2182,6 +2182,13 @@ pub(crate) struct DeferQueue {
 #[derive(Default)]
 pub(crate) struct SpawnedTasks(CancelMap<Arc<str>>);
 
+/// Whether {plugin} is unloading, so a task it spawns now would be born
+/// cancelled and never run.
+pub(crate) fn plugin_spawns_cancelled(lua: &Lua, plugin: &Arc<str>) -> bool {
+    lua.app_data_ref::<SpawnedTasks>()
+        .is_some_and(|spawned| spawned.0.is_cancelled(plugin))
+}
+
 impl DeferQueue {
     pub(crate) fn new() -> Self {
         let (tx, rx) = flume::unbounded();
@@ -2273,8 +2280,8 @@ async fn run_work_fn(
 /// Fire a `maki.defer_fn` callback: sleep, then run the Function once.
 ///
 /// The detached scope gives the callback a task of its own, outliving the
-/// one that scheduled it, and pumps job events so a `maki.system` started in
-/// the callback still gets its `on_stdout` and `on_exit`.
+/// one that scheduled it, and pumps job events so a `maki.fn.jobstart` job
+/// started in the callback still gets its `on_stdout` and `on_exit`.
 ///
 /// The gate guard comes after the sleep: pending timers should pile up
 /// cheaply, but the bodies compete for the `MAX_INFLIGHT_TOOLS` budget so
@@ -3180,6 +3187,7 @@ impl LuaRuntime {
         }
         crate::api::fs::clear_plugin_files(plugin);
         crate::api::net::close_plugin_conns(plugin);
+        crate::api::system::kill_plugin_systems(plugin);
         let revision_guard = self.drop_plugin_keys(plugin);
         with_packs(&self.lua, |packs| packs.active.remove(plugin));
         if let Some(mut store) = self.lua.app_data_mut::<KeymapStore>() {

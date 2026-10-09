@@ -131,6 +131,7 @@ The rules:
 | [`maki.provider.auth`](#maki-provider-auth) | Credential storage for the providers this plugin registered. |
 | [`maki.session`](#maki-session) | Host session primitives. |
 | [`maki.Timer`](#maki-Timer) | Handle returned by `maki.defer_fn`. |
+| [`maki.SystemObj`](#maki-SystemObj) | A process started by `maki.system`, with field `pid` (integer). |
 | [`maki.task`](#maki-task) | The subagents of the focused session and their transcripts. |
 | [`maki.text`](#maki-text) | Text utilities: format conversion and the fuzzy matcher the built-in |
 | [`maki.treesitter`](#maki-treesitter) | Tree-sitter parsing and query API. |
@@ -323,6 +324,64 @@ local Toast = require("maki.toast")
 maki.set_notify_handler(function(msg, level, opts)
   Toast.show(msg, { title = opts and opts.title, level = level })
 end)
+```
+
+---
+
+### `maki.system()` {#maki-system}
+
+```lua
+maki.system({cmd}, {opts?}, {on_exit?})
+```
+
+Run {cmd} as a child process, like Neovim's `vim.system`, so a plugin
+can talk to a server over stdio and lift most of `vim/lsp/rpc.lua`.
+
+Callbacks get raw chunks in order, one at a time, and may yield. Output
+is read at most one chunk ahead of them, so a slow callback slows the
+child down instead of filling memory. The process outlives the call that
+started it. Unloading the plugin kills it with its process group, and so
+does garbage collecting the handle of a process with no callback.
+
+{opts} fields:
+  `cwd` (string) Working directory (tilde is expanded).
+  `env` (table) Variables added to the environment, `{ VAR = "value" }`.
+  `stdin` (boolean|string) `true` opens a pipe for `obj:write()`. A
+    string is written and then stdin is closed. Default: no stdin.
+  `stdout` (function|boolean) `fun(err, data)` gets each chunk, then
+    `data = nil` at the end of the stream. `true` (default) collects the
+    output into the completed table, `false` discards it.
+  `stderr` (function|boolean) Same as `stdout`.
+
+{on_exit} gets the completed table `{ code, signal, stdout?, stderr? }`
+once the process has exited and its output has ended. `stdout` and
+`stderr` are only set for collected streams.
+
+Differences from Neovim: failures return nil plus an error, `write` and
+`wait` yield instead of blocking, and `text`, `timeout`, `clear_env`,
+`detach` and signal names are not supported.
+
+Requires the `run` [plugin permission](#plugin-permissions).
+
+**Parameters:**
+
+- `{cmd}` (`string[]`) Program and arguments, like `{ "rust-analyzer" }`. No shell is involved.
+- `{opts?}` (`table?`) Options (see above).
+- `{on_exit?}` (`function?`) Called with the completed table.
+
+**Returns:** ([`maki.SystemObj?`](#maki-SystemObj), `string?`) The process, or nil plus an error string.
+
+**Example:**
+
+```lua
+local server, err = maki.system({ "rust-analyzer" }, {
+  stdin = true,
+  stdout = function(_, data)
+    if data then decoder:feed(data) end
+  end,
+}, function(done) print("server exited", done.code) end)
+if not server then return maki.log.error(err) end
+server:write(frame)
 ```
 
 
@@ -1134,7 +1193,7 @@ maki.api.set_slot("ui.plan_form.actions", function(prev, ev)
     label = "Commit and implement",
     desc = "Commit the plan file first, then implement it",
     handler = function(opts)
-      maki.fn.system({ "git", "commit", "-am", "plan" })
+      assert(maki.system({ "git", "commit", "-am", "plan" })):wait()
       maki.session.set_mode("build", { session = opts.session })
       maki.session.prompt("Implement " .. opts.path, { session = opts.session })
     end,
@@ -4663,6 +4722,102 @@ nothing once the callback has already run.
 ```lua
 local h = maki.defer_fn(function() rebuild() end, 300)
 h:stop()
+```
+
+
+## maki.SystemObj {#maki-SystemObj}
+
+A process started by `maki.system`, with field `pid` (integer).
+`write` and `wait` yield until done and can run at the same time.
+
+---
+
+### `SystemObj:write()` {#SystemObj-write}
+
+```lua
+SystemObj:write({data?})
+```
+
+Write {data} to stdin, or close it with `nil` once earlier writes are
+out. Yields until written, except in the process's own callbacks, where
+it queues the data and returns at once so the child cannot deadlock on
+output the callback has yet to read.
+
+**Parameters:**
+
+- `{data?}` (`string?`) Bytes to send, or nil to close stdin.
+
+**Returns:** (`boolean?`, `string?`) `true`, or nil plus an error string.
+
+**Example:**
+
+```lua
+local ok, err = obj:write(header .. body)
+if not ok then return maki.log.error(err) end
+```
+
+---
+
+### `SystemObj:wait()` {#SystemObj-wait}
+
+```lua
+SystemObj:wait({timeout?})
+```
+
+Wait until the process has exited, its output has ended and `on_exit`
+has returned, and return the completed table. After {timeout} ms the
+process gets SIGKILL and its code reads 124. Raises inside a `stdout` or
+`stderr` callback of the same process.
+
+**Parameters:**
+
+- `{timeout?}` (`integer?`) Milliseconds to wait before killing the process.
+
+**Returns:** (`table?`, `string?`) The completed table, or nil plus an error string.
+
+**Example:**
+
+```lua
+local done = assert(obj:wait(60000))
+if done.code ~= 0 then print(done.stderr) end
+```
+
+---
+
+### `SystemObj:kill()` {#SystemObj-kill}
+
+```lua
+SystemObj:kill({signal?})
+```
+
+Send {signal} to the process group, unless the process was reaped.
+
+**Parameters:**
+
+- `{signal?}` (`integer?`) Signal number. Default 15 (SIGTERM).
+
+**Example:**
+
+```lua
+obj:kill(9)
+```
+
+---
+
+### `SystemObj:is_closing()` {#SystemObj-is_closing}
+
+```lua
+SystemObj:is_closing()
+```
+
+Whether the process has exited and its output has ended.
+
+**Returns:** (`boolean`)
+
+**Example:**
+
+```lua
+if not server:is_closing() then server:kill() end
 ```
 
 

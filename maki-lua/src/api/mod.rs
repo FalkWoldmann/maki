@@ -19,6 +19,7 @@ pub(crate) mod provider;
 pub(crate) mod session;
 pub(crate) mod slot;
 pub(crate) mod split;
+pub(crate) mod system;
 pub(crate) mod task;
 pub(crate) mod text;
 pub(crate) mod tool;
@@ -133,7 +134,7 @@ pub(crate) fn create_maki_global(
         )?,
     )?;
     split::split__register(&maki, lua)?;
-    top::add_top_methods(&maki, lua, Arc::clone(&plugin))?;
+    top::add_top_methods(&maki, lua, permissions, Arc::clone(&plugin))?;
     maki.set(
         "async",
         r#async::create_async_table(lua, Arc::clone(&plugin))?,

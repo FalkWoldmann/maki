@@ -1,7 +1,7 @@
 //! Top-level entries directly on the `maki` global: `defer_fn` (a
-//! UI-scoped timer for "run this after N ms, not tied to my task") and
+//! UI-scoped timer for "run this after N ms, not tied to my task"),
 //! `notify` (a one-line notice whose default any plugin can swap via
-//! `maki.set_notify_handler`).
+//! `maki.set_notify_handler`) and `system` (see [`crate::api::system`]).
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -11,7 +11,9 @@ use std::time::Duration;
 use maki_lua_macro::{lua_class, lua_fn, lua_table};
 use mlua::{Function, Lua, RegistryKey, Result as LuaResult, Table, Value};
 
+use crate::api::system::{system__doc, system__register};
 use crate::api::util::command::{UiAction, ui_send};
+use crate::plugin_permissions::PluginPermissions;
 use crate::runtime::{DeferQueue, DeferredCallback};
 
 /// The one `maki.notify` override for the whole process. `create_maki_global`
@@ -214,9 +216,10 @@ pub(crate) fn clear_notify_handler(lua: &Lua, plugin: &str) {
 
 lua_table! {
     extend "maki" => pub(crate) fn add_top_methods(
+        perms: &PluginPermissions,
         plugin: Arc<str>,
     ), DOCS [
-        defer_fn(plugin), manual notify, set_notify_handler(plugin),
+        defer_fn(plugin), manual notify, set_notify_handler(plugin), system(perms, plugin),
     ]
 }
 
@@ -239,7 +242,13 @@ mod tests {
         }
         let maki = lua.create_table().unwrap();
         let owner: Arc<str> = Arc::from(plugin);
-        add_top_methods(&maki, lua, Arc::clone(&owner)).unwrap();
+        add_top_methods(
+            &maki,
+            lua,
+            &PluginPermissions::trusted(),
+            Arc::clone(&owner),
+        )
+        .unwrap();
         let index = lua.create_table().unwrap();
         notify__register(&index, lua, tx, Arc::clone(&owner)).unwrap();
         let router = lua

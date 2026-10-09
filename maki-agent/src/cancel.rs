@@ -180,6 +180,12 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
         entry.registrations.clear();
     }
 
+    /// Whether {id} is marked, so whatever registers under it now is born
+    /// cancelled.
+    pub fn is_cancelled(&self, id: &K) -> bool {
+        self.lock().get(id).is_some_and(|entry| entry.cancelled)
+    }
+
     /// A plugin that loads again needs this, or every task it starts would be
     /// born cancelled.
     pub fn revive(&self, id: &K) {
@@ -330,6 +336,7 @@ mod tests {
         }
 
         map.cancel(key());
+        assert!(map.is_cancelled(&key()));
 
         let (trigger, token) = CancelToken::new();
         map.insert(key(), trigger);

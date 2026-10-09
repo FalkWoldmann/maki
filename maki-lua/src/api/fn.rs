@@ -11,7 +11,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use maki_lua_macro::{lua_fn, lua_table};
-use maki_providers::strip_provider_keys;
 use maki_storage::id::MakiId;
 use mlua::{Function, Lua, RegistryKey, Result as LuaResult, Table, Value};
 use shell_words::join as shell_join;
@@ -19,6 +18,7 @@ use shell_words::join as shell_join;
 use crate::api::fs::expand_tilde;
 use crate::api::util::command::{UiAction, ui_roundtrip, ui_send};
 use crate::api::util::pair::{Pair, err_pair, try_pair};
+use crate::api::util::process::{SIGKILL, isolate, signal_group};
 use crate::plugin_permissions::{Permission, PluginPermissions, denied_error};
 use crate::runtime::{active_task_id, job_task_id, strip_traceback, with_jobs};
 
@@ -283,29 +283,11 @@ impl JobStore {
             on_exit,
         } = spec;
         let mut command = cmd.build();
-        strip_provider_keys(&mut command)
+        isolate(&mut command, cwd.as_deref())?;
+        command
             .stdout(stdout.stdio()?)
             .stderr(stderr.stdio()?)
             .stdin(Stdio::null());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // SAFETY: setsid is async-signal-safe, so it is sound to call in pre_exec.
-            unsafe {
-                command.pre_exec(|| {
-                    rustix::process::setsid()?;
-                    Ok(())
-                });
-            }
-        }
-
-        if let Some(dir) = cwd.as_deref().map(expand_tilde) {
-            if !dir.is_dir() {
-                return Err(format!("cwd is not a directory: {}", dir.display()));
-            }
-            command.current_dir(dir);
-        }
         if let Some(ref env_map) = env {
             for (k, v) in env_map {
                 command.env(k, v);
@@ -795,26 +777,8 @@ fn shell_command(cmd: &str) -> Command {
 /// so the group is still the right target. The flag carries no data of its
 /// own, hence `Relaxed`.
 fn kill_job(job: &JobMeta) {
-    if job.reaped.load(Ordering::Relaxed) {
-        return;
-    }
-    #[cfg(unix)]
-    {
-        use rustix::process::{Pid, Signal, kill_process_group};
-        if let Ok(raw) = i32::try_from(job.pid)
-            && let Some(pid) = Pid::from_raw(raw)
-        {
-            let _ = kill_process_group(pid, Signal::KILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &job.pid.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+    if !job.reaped.load(Ordering::Relaxed) {
+        signal_group(job.pid, SIGKILL);
     }
 }
 
