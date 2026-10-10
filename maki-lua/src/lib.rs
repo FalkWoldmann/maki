@@ -13,6 +13,7 @@ pub(crate) mod plugin_permissions;
 mod runtime;
 pub mod session_snapshot;
 
+pub use api::r#fn::set_shell_preference;
 pub use api::keymap::{KeybindTicket, KeymapEntry, KeymapReader, KeymapSnapshot};
 pub use api::net::set_allowed_private_hosts;
 pub use api::options::{OptionSpec, OptionType, PluginOptionSpecs};

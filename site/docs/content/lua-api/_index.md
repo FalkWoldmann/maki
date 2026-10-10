@@ -2063,9 +2063,11 @@ local id = maki.fn.jobstart("git status", {
 maki.fn.jobstart({cmd}, {opts?})
 ```
 
-Run a command in the background. A string runs through `bash -c` on Unix
-or `cmd /C` on Windows; a table is spawned as argv, with no shell in
-between (nothing in it can be read as a redirect, a pipe, or `$(...)`).
+Run a command in the background. A string runs through `bash -c` on Unix.
+On Windows it follows `agent.shell`: Git Bash by default, `cmd.exe /C`
+when set to `cmd`, or any program you name. A table is spawned as argv,
+with no shell in between (nothing in it can be read as a redirect, a pipe,
+or `$(...)`).
 You get back a job id that you can pass to `jobstop` or `jobwait` to
 control the process.
 

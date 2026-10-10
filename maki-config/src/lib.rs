@@ -802,6 +802,7 @@ pub struct AgentFileConfig {
     pub post_compaction_instructions: Option<String>,
     pub stale_read_check: Option<bool>,
     pub rtk: Option<bool>,
+    pub shell: Option<ShellPreference>,
 }
 
 impl AgentFileConfig {
@@ -817,7 +818,8 @@ impl AgentFileConfig {
             compaction_instructions,
             post_compaction_instructions,
             stale_read_check,
-            rtk
+            rtk,
+            shell
         );
     }
 }
@@ -1407,6 +1409,17 @@ impl Default for ToolOutputLines {
     }
 }
 
+/// Only Windows reads this, Unix always runs `bash -c`. There is no `Cmd`
+/// variant because `cmd` is just a program too, one that wants `/C`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShellPreference {
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(untagged)]
+    Program(PathBuf),
+}
+
 #[derive(Debug, Clone, ConfigSection, Serialize)]
 #[config(section = "agent")]
 pub struct AgentConfig {
@@ -1451,6 +1464,14 @@ pub struct AgentConfig {
     )]
     pub rtk: bool,
 
+    #[config(
+        default = ShellPreference::Auto,
+        ty = "string",
+        default_doc = "auto",
+        desc = "Shell for string commands on Windows (`jobstart`, UI `!`): `auto` (Git Bash if installed, else `cmd.exe`), `cmd`, or a path to an executable"
+    )]
+    pub shell: ShellPreference,
+
     #[config(skip, default = "None")]
     pub max_turns: Option<u32>,
 
@@ -1477,6 +1498,7 @@ impl AgentConfig {
             post_compaction_instructions: file.post_compaction_instructions,
             stale_read_check: file.stale_read_check.unwrap_or(true),
             rtk: file.rtk.unwrap_or(true),
+            shell: file.shell.unwrap_or_default(),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools: Vec::new(),
@@ -2841,6 +2863,13 @@ mod tests {
     #[test_case("\"abc%\"" ; "non_numeric_percent")]
     fn compaction_buffer_rejects(json: &str) {
         assert!(serde_json::from_str::<CompactionBuffer>(json).is_err());
+    }
+
+    #[test_case("\"auto\"", ShellPreference::Auto ; "auto")]
+    #[test_case(r#""C:\\Git\\bin\\bash.exe""#, ShellPreference::Program(PathBuf::from(r"C:\Git\bin\bash.exe")) ; "path")]
+    fn shell_preference_deserializes(json: &str, expected: ShellPreference) {
+        let parsed: ShellPreference = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, expected);
     }
 
     #[test_case(CompactionBuffer::Tokens(10_000), 64_000, 10_000 ; "tokens_ignore_window")]
