@@ -37,6 +37,7 @@ const GET: &str = "GET";
 const NO_ATTEMPT: &str = "no request was attempted";
 const MAX_REDIRECTS: u32 = 10;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const USER_AGENT_HEADER: &str = "User-Agent";
 const CF_MITIGATED: &str = "cf-mitigated";
 const CF_CHALLENGE: &str = "challenge";
 const FALLBACK_USER_AGENT: &str = "maki";
@@ -740,10 +741,15 @@ fn build_request(
     headers: &[(String, String)],
     body: Vec<u8>,
 ) -> Result<Request<AsyncBody>, String> {
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(url)
-        .header("User-Agent", user_agent);
+    let mut builder = Request::builder().method(method).uri(url);
+    // The builder appends rather than replaces, and servers that check the
+    // user agent reject a request carrying two.
+    if !headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case(USER_AGENT_HEADER))
+    {
+        builder = builder.header(USER_AGENT_HEADER, user_agent);
+    }
 
     for (k, v) in headers {
         builder = builder.header(k.as_str(), v.as_str());
@@ -1663,6 +1669,15 @@ mod tests {
         let req = build_request("https://example.com", "agent", "GET", &headers, vec![]).unwrap();
         assert_eq!(req.headers()["Accept"], "text/html");
         assert_eq!(req.headers()["X-Custom"], "foo");
+    }
+
+    #[test_case("User-Agent" ; "same_case")]
+    #[test_case("user-agent" ; "lowercase")]
+    fn a_callers_user_agent_replaces_the_default(name: &str) {
+        let headers = vec![(name.to_string(), "plugin".to_string())];
+        let req = build_request("https://example.com", "agent", "GET", &headers, vec![]).unwrap();
+        let agents: Vec<_> = req.headers().get_all(USER_AGENT_HEADER).iter().collect();
+        assert_eq!(agents, ["plugin"]);
     }
 
     #[test]
