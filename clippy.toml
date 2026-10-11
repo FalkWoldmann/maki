@@ -1,5 +1,17 @@
+avoid-breaking-exported-api = false
+
+await-holding-invalid-types = [
+  { path = "tracing::span::Entered", reason = "span guards are thread-local; use `.instrument(span)` or `#[tracing::instrument]`" },
+  { path = "tracing::span::EnteredSpan", reason = "span guards are thread-local; use `.instrument(span)` or `#[tracing::instrument]`" },
+]
+
 disallowed-methods = [
   { path = "uuid::Uuid::new_v4", reason = "use maki_storage::id::MakiId::generate (base58-encoded UUIDv7)", allow-invalid = true },
   { path = "uuid::Uuid::new_v7", reason = "use maki_storage::id::MakiId::generate (base58-encoded UUIDv7)", allow-invalid = true },
   { path = "uuid::Uuid::now_v7", reason = "use maki_storage::id::MakiId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "futures::executor::block_on", reason = "deadlocks inside the executor; `.await` it", allow-invalid = true },
+  { path = "futures_executor::block_on", reason = "deadlocks inside the executor; `.await` it", allow-invalid = true },
+  { path = "std::sync::mpsc::Receiver::recv", reason = "blocks the thread; use `flume`" },
+  { path = "rustls::ClientConfig::dangerous", reason = "custom verifiers bypass TLS validation", allow-invalid = true },
+  { path = "serde_json::Deserializer::disable_recursion_limit", reason = "deeply nested untrusted JSON can overflow the stack", allow-invalid = true },
 ]
