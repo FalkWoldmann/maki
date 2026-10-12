@@ -17,7 +17,7 @@ pub(crate) mod tasks;
 pub(crate) mod tests;
 pub(crate) mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::mem;
 use std::path::PathBuf;
@@ -353,6 +353,10 @@ pub struct App {
     pub(super) chats: Vec<Chat>,
     pub(super) active_chat: usize,
     pub(super) chat_index: HashMap<String, usize>,
+    /// Cancel marks a task finished while its agent is still shutting down,
+    /// so the user can delete it before its last events arrive. Those events
+    /// would bring it back, so we drop them.
+    pub(super) deleted_tasks: HashSet<String>,
     pub(crate) input_box: InputBox,
     pub(super) command_palette: CommandPalette,
     pub(super) theme_picker: ThemePicker,
@@ -474,6 +478,7 @@ impl App {
             )],
             active_chat: 0,
             chat_index: HashMap::new(),
+            deleted_tasks: HashSet::new(),
             input_box,
             command_palette: CommandPalette::new(
                 custom_commands,
@@ -488,7 +493,7 @@ impl App {
             alert_modal: AlertModal::new(),
             help_modal: HelpModal::new(),
             usage_modal: UsageModal::new(),
-            btw_modal: BtwModal::new(typewriter, ui_config.show_thinking),
+            btw_modal: BtwModal::new(typewriter, ui_config.thinking_lines),
             float_mgr: FloatManager::new(),
             search_modal: SearchModal::new(),
             file_picker: FilePickerModal::new(),
@@ -1562,6 +1567,14 @@ impl App {
                     "tool render event dropped: stale run_id"
                 );
             }
+            return vec![];
+        }
+
+        let task_id = match &envelope.event {
+            AgentEvent::SubagentHistory { tool_use_id, .. } => Some(tool_use_id),
+            _ => envelope.subagent.as_ref().map(|s| &s.parent_tool_use_id),
+        };
+        if task_id.is_some_and(|id| self.deleted_tasks.contains(id)) {
             return vec![];
         }
 

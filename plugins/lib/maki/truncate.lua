@@ -1,5 +1,6 @@
 --- require("maki.truncate")(text, max_lines, max_bytes)
---- Bounds model text. With both limits nil, returns the complete text unchanged.
+--- Cuts {text} to the limits and notes how many bytes it dropped. A nil limit
+--- is unlimited.
 local function truncate(text, max_lines, max_bytes)
   if not max_lines and not max_bytes then
     return text

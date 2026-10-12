@@ -14,7 +14,7 @@ local opts = maki.api.register_options(output_limits.extend({
     min = 10,
     desc = "Max match groups per search. A call's `limit` param overrides it.",
   },
-  max_line_bytes = { default = 500, min = 80, desc = "Truncate model output lines longer than this many bytes." },
+  max_line_bytes = { default = 500, min = 80, desc = "Truncate lines the model sees at this many bytes." },
 }))
 
 local function has_context(groups)

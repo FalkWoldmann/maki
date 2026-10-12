@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use maki_agent::cancel::CancelToken;
+use maki_config::providers::ProvidersConfig;
 use maki_lua_macro::{lua_fn, lua_table};
 use maki_providers::AgentError;
 use maki_providers::plugin::{
@@ -607,6 +608,19 @@ fn owned(slugs: &OwnedSlugs, slug: &str) -> LuaResult<()> {
     )))
 }
 
+/// Whether providers.toml selects this package to implement {slug}. A package
+/// that ships several providers calls it at load time to skip the ones the user
+/// did not [select](/docs/providers/#select-a-provider-package).
+///
+/// @param slug string Provider name.
+/// @return boolean
+#[lua_fn]
+fn is_selected(_lua: &Lua, #[ctx] plugin: Arc<str>, slug: String) -> LuaResult<bool> {
+    Ok(ProvidersConfig::load_or_default()
+        .get(&slug)
+        .is_some_and(|def| def.plugin.as_deref() == Some(plugin.as_ref())))
+}
+
 /// Register a provider this plugin implements. Its models are addressed as
 /// `<slug>/<model>` and appear in the model picker and in `/model`.
 ///
@@ -637,8 +651,7 @@ fn owned(slugs: &OwnedSlugs, slug: &str) -> LuaResult<()> {
 ///
 /// {spec} fields:
 ///   `slug` (string) Required. Letters, digits, `_` and `-`, starting with a
-///           letter or digit. Must not be a slug Maki ships, one it serves
-///           from models.dev, or one defined in `providers.toml`.
+///           letter or digit. See the [slug rules](/docs/providers/#slug-rules).
 ///   `display_name` (string) Required. Shown in the UI.
 ///   `codec` (string) Wire format: `"openai"`, `"openai-responses"`,
 ///           `"anthropic"` or `"google"`.
@@ -712,8 +725,10 @@ fn owned(slugs: &OwnedSlugs, slug: &str) -> LuaResult<()> {
 ///            [model rows](/docs/providers/#model-rows).
 ///   `auth` (function) `function(ctx, purpose)` returning
 ///            `{ base_url = ..., headers = { ... } }`. `purpose` is
-///            `"resolve"` before the first request, `"refresh"` after a 401,
-///            or `"reload"` after a login changed the stored credentials.
+///            `"resolve"` before the first request, `"refresh"` after a 401
+///            on the newest credentials, or `"reload"` to re-read stored
+///            credentials after a login or another maki process changed them.
+///            Spend a refresh token only on `"refresh"`.
 ///            Omitting `base_url` keeps the current one.
 ///   `list_models` (function) `function(ctx)` returning model rows for a
 ///            catalogue only known at runtime. Without it, the provider
@@ -1030,6 +1045,7 @@ lua_table! {
     /// ```
     "maki.provider" => pub(crate) fn create_provider_table(perms: &PluginPermissions, plugin: Arc<str>, egress: NetEgress, authority: DeclAuthority, reads_env: bool), DOCS [
         register(perms, plugin, egress, authority, reads_env),
+        is_selected(plugin),
         http_error,
     ]
 }

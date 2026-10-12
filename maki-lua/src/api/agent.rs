@@ -341,10 +341,10 @@ async fn callable_tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>) -> LuaResult<P
 /// @param input table|any Tool input (JSON-serializable). Must match the tool's `input_schema`.
 /// @param opts table? Optional fields:
 ///   `timeout` (integer?) - deadline in seconds.
-///   `output_mode` (string?) - "full" (default) returns complete text.
-///     "compact" applies model output limits and automatic RTK rewriting.
-///     Hooks receive the mode in both cases so presentation filters can skip
-///     full results. Permissions and redaction still apply in both modes.
+///   `output_mode` (string?) - "full" (default) returns the complete text.
+///     "compact" returns what the model would get, with output limits and
+///     RTK rewriting. Permissions and hooks apply in both modes, and hooks
+///     see the mode as `ctx.output_mode`.
 ///   `on_live_buf` (function?) - called with a `BufHandle` for each live buffer
 ///     the tool publishes. Must not yield.
 ///   `on_annotation` (function?) - called with an annotation string for each

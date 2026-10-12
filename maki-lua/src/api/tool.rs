@@ -13,7 +13,7 @@ use maki_agent::tools::Tool;
 use maki_agent::tools::registry::{RegisteredTool, ToolRegistry};
 use maki_agent::tools::schema::{ParamSchema, to_json_schema, try_from_json, validate};
 use maki_agent::tools::{
-    BoxFuture, Deadline, DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError,
+    BoxFuture, DescriptionContext, ExecFuture, HeaderFuture, HeaderResult, ParseError,
     PermissionScopes, ToolAudience, ToolContext, ToolExecResult, ToolFilter, ToolInvocation,
     is_tool_enabled, timeout_annotation,
 };
@@ -442,7 +442,6 @@ impl ToolInvocation for LuaToolInvocation {
         // tool dispatched is built while its parent is being polled, and that
         // is the only moment we can tell it runs under the parent's slot.
         let nested = crate::runtime::under_inflight_slot();
-        let deadline = ctx.deadline;
         let plugin = self.plugin;
         let tool = self.tool;
         let input = self.input;
@@ -450,18 +449,15 @@ impl ToolInvocation for LuaToolInvocation {
         let tool_timeout = self.timeout;
 
         Box::pin(async move {
-            let effective_secs: Option<u64> = match tool_timeout {
-                Some(d) => match deadline.cap_timeout(d.as_secs()) {
-                    Ok(s) => Some(s),
-                    Err(e) => return Err(e).into(),
-                },
-                None => match deadline {
-                    Deadline::At(_) => match deadline.cap_timeout(u64::MAX) {
-                        Ok(s) => Some(s),
-                        Err(e) => return Err(e).into(),
-                    },
-                    Deadline::None => None,
-                },
+            let deadline_at = ctx.deadline.at();
+            let effective_secs = match tool_timeout
+                .map(|timeout| timeout.as_secs())
+                .or(deadline_at.map(|_| u64::MAX))
+                .map(|secs| ctx.deadline.cap_timeout(secs))
+                .transpose()
+            {
+                Ok(secs) => secs,
+                Err(e) => return Err(e).into(),
             };
 
             let (reply_tx, reply_rx) = flume::bounded::<ToolCallReply>(1);
@@ -477,10 +473,7 @@ impl ToolInvocation for LuaToolInvocation {
                     tool: Arc::clone(&tool),
                     input,
                     ctx: Box::new(lua_ctx),
-                    deadline: match deadline {
-                        Deadline::At(t) => Some(t),
-                        Deadline::None => None,
-                    },
+                    deadline: deadline_at,
                     reply: reply_tx,
                     live,
                     nested,
@@ -656,8 +649,10 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 /// to decide when to use the tool), a JSON Schema for the input, and a handler
 /// function. The handler receives `(input, ctx)` and returns either a plain
 /// string or a table with richer output fields.
-/// `ctx:output_mode()` is "full" or "compact". Apply presentation limits
-/// only in compact mode so Python and other code callers get complete text.
+///
+/// `ctx:output_mode()` returns "compact" when the result goes to the model and
+/// "full" when code such as `code_execution` made the call. Apply output limits
+/// only in compact mode.
 ///
 /// @param spec table Tool specification:
 ///   name            (string)   Required. ASCII identifier, up to 64 chars ([a-zA-Z_][a-zA-Z0-9_]*).
@@ -665,7 +660,7 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
 ///   schema          (table)    Required. JSON Schema object describing the tool's input parameters.
 ///   handler         (function) Required. Called with `(input, ctx)` when the tool is invoked.
 ///                              Must return a string or a table with any of these fields:
-///                                llm_output  (string)  Text returned to the caller, including the model.
+///                                llm_output  (string)  Result text for the model or the calling code.
 ///                                is_error    (boolean) When true, the result is treated as an error.
 ///                                content     (string)  Alias for llm_output (legacy).
 ///                                body        (BufHandle) Rich rendered body shown in the UI.

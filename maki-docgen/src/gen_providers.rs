@@ -142,10 +142,11 @@ Env `<SLUG>_BASE_URL` still wins over both the plan and a `base_url` in this fil
     format!(
         r#"## providers.toml
 
-`providers.toml` lives in the config directory (`~/.config/maki/providers.toml` on Linux/macOS, `%APPDATA%\maki\providers.toml` on Windows). It is the file for provider overrides and custom HTTP providers. Two jobs:
+`providers.toml` lives in the config directory (`~/.config/maki/providers.toml` on Linux/macOS, `%APPDATA%\maki\providers.toml` on Windows). Use it to:
 
 1. Tweak a built-in (pick a plan, change its base URL, set `enable_free_models` for Opencode).
 2. Declare a custom provider that speaks OpenAI, Anthropic, or Google wire format.
+3. [Pick the plugin package](#select-a-provider-package) that implements a provider.
 
 ```toml
 # Point a built-in at a proxy. Env vars still win over this file.
@@ -184,6 +185,7 @@ supports_vision = false
 |-------|------|-------|
 | `display_name` | string | Shown in pickers and auth status |
 | `protocol` | string | `openai`, `openai-responses`, `anthropic`, or `google`. Required for custom slugs |
+| `plugin` | string | [Package](#select-a-provider-package) that implements this provider. Not allowed with `protocol` |
 | `base_url` | string | Origin of the API. Maki appends the protocol paths |
 | `plan` | string | Built-in plan key (see Plans below). Sets base URL and default model |
 | `api_key_env` | string | Env var that holds the key. Defaults to `<SLUG>_API_KEY` |
@@ -297,6 +299,30 @@ Maki sends the provider's credentials only to those hosts, plus any origin you s
 
 The [Lua API](/docs/lua-api/#maki-provider-register) lists every field. This section explains the choices.
 
+### Select a provider package
+
+Maki builds a generic client for each [models.dev](https://models.dev/) provider it has no built-in support for. To have a plugin implement one instead, select its [package](/docs/packages/) in `providers.toml`:
+
+```toml
+[acme]
+plugin = "acme-provider"
+```
+
+Only that package can then register `acme`, and it receives the credentials already saved for `acme`. Built-in names stay [reserved](#slug-rules).
+
+The package still needs its usual permission approval. If it is missing, fails to load, or does not register `acme`, the provider is unavailable. Maki does not fall back to the generic client.
+
+Run `/reload` or restart after changing `plugin`. Remove it to go back to the generic client.
+
+A package that ships several providers can skip the ones you did not select:
+
+```lua
+if not maki.provider.is_selected("acme") then
+  return
+end
+-- Register the provider here.
+```
+
 ### codec or base
 
 Set exactly one of the two. `codec` picks the wire format the API speaks:
@@ -345,7 +371,7 @@ Every hook is optional. Without any, the provider reads its key from `api_key_en
 
 | Hook | Runs |
 |------|------|
-| `auth(ctx, purpose)` | `"resolve"` before the first request, `"refresh"` after a 401 (then retries once), `"reload"` after a login changed the stored credentials |
+| `auth(ctx, purpose)` | `"resolve"` before the first request, `"refresh"` after a 401 on the newest credentials (then retries), `"reload"` to re-read stored credentials after a login or another maki process changed them |
 | `list_models(ctx)` | When the picker or `maki models` lists models |
 | `build_body(ctx, body, model, opts)` | On every request, with the final body |
 | `map_error(ctx, status, message)` | On an API error, before it reaches the UI |
@@ -379,7 +405,8 @@ The value is any JSON object. Each slug gets its own file at `~/.local/state/mak
 
 - Starts with a letter or digit, then only letters, digits, `_` and `-`
 - Not a slug Maki ships, built in or as a bundled plugin, even one you turned off. Your plugin would otherwise get the API key saved for that provider
-- Not a slug from `providers.toml` or another plugin
+- Not a models.dev provider name, unless you [selected](#select-a-provider-package) the package for it
+- Not a custom provider from `providers.toml` or a slug another plugin registered
 
 ### Migrating from provider scripts
 

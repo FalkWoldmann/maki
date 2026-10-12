@@ -51,11 +51,8 @@ async fn focus(
     roundtrip(lua, tx, TaskRequest::Focus { id }).await
 }
 
-/// Deletes a finished task and its transcript, so a reload cannot bring it
-/// back. The main chat and still-running tasks are refused.
-///
-/// Deleting the focused task moves focus to the chat before it. Call
-/// `maki.task.focus()` afterwards to land somewhere else.
+/// Deletes a finished task and its saved transcript. Refuses the main chat and
+/// running tasks. Deleting the focused task moves focus to the chat before it.
 ///
 /// @param id string Task id, as returned by `list()`.
 /// @return (boolean|nil, string|nil) true on success, or nil and an error.

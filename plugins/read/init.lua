@@ -21,7 +21,7 @@ local DESCRIPTION = [[Read a file. Returns contents with line numbers (1-indexed
 - Avoid tiny repeated slices - read a larger window if you need more context.]]
 
 local opts = maki.api.register_options({
-  max_line_bytes = { default = 500, min = 80, desc = "Truncate model output lines longer than this many bytes." },
+  max_line_bytes = { default = 500, min = 80, desc = "Truncate lines the model sees at this many bytes." },
   max_output_lines = output_limits.specs.max_output_lines,
 })
 

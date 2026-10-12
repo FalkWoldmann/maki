@@ -151,6 +151,7 @@ impl App {
                 .map(|(tool_id, _, _)| tool_id.to_owned())
                 .collect()
         });
+        self.deleted_tasks.insert(id.to_owned());
         Ok(())
     }
 
@@ -439,6 +440,22 @@ mod tests {
             .map(|sa| sa.tool_use_id.as_str())
             .collect();
         assert_eq!(recorded, [OTHER_ID], "and stays deleted");
+        assert!(!app.state.session.subagent_messages().contains_key(TASK_ID));
+    }
+
+    /// Cancel is the one way to delete a task whose agent is still running.
+    #[test_case(|app: &mut App| close_subagent_transcript(app, TASK_ID) ; "late_transcript")]
+    #[test_case(|app| start_subagent(app, TASK_ID, RESEARCH_NAME)      ; "late_event")]
+    fn a_deleted_task_stays_deleted_after_its_agent_stops(late: fn(&mut App)) {
+        let mut app = app_with_subagent_id(TASK_ID);
+        app.focus_task(TASK_ID).unwrap();
+        app.handle_subagent_cancel();
+        app.remove_task(TASK_ID).unwrap();
+
+        late(&mut app);
+
+        assert_eq!(app.chats.len(), 1);
+        assert!(app.state.session.subagents().is_empty());
         assert!(!app.state.session.subagent_messages().contains_key(TASK_ID));
     }
 

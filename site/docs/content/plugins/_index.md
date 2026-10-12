@@ -111,7 +111,7 @@ local output_limits = require("maki.output_limits")
 local NO_FILES_FOUND = "No files found"
 
 local opts = maki.api.register_options(output_limits.extend({
-  search_result_limit = { default = 100, min = 10, desc = "Max files returned per search in compact mode." },
+  search_result_limit = { default = 100, min = 10, desc = "Max files the model sees per search." },
 }))
 
 local function glob_view_opts(ctx)

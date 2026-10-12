@@ -75,12 +75,12 @@ All fields are optional. Typos in field names cause an error right away.
 | `splash_animation` | bool | `true` | - | Show splash animation on startup |
 | `scrollbar` | bool | `true` | - | Show vertical scrollbar in scrollable areas |
 | `inline_images` | bool | `true` | - | Render inline images in terminals with graphics support, falling back to an [image] line where nothing else names the image |
-| `notifications` | string | `auto` | - | Terminal notification method: auto, osc9, bell, notify, or off |
+| `notifications` | string | `auto` | - | Notification method: auto, osc9, bell, notify, or off |
 | `flash_duration_ms` | u64 | `1500` | - | Duration of flash messages (ms) |
 | `typewriter_ms_per_char` | u64 | `4` | - | Typewriter effect speed (ms/char) |
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
-| `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
+| `thinking_lines` | integer | `3` | - | Collapse model reasoning to its header and last N lines. Click to toggle. 0 shows only the header, -1 never collapses |
 | `clock_format` | String | `system` | - | Clock format for timestamps: "12h", "24h", or "system" (follow the OS preference, 24h when unknown) |
 
 ### `ui.theme`
@@ -121,15 +121,15 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_output_bytes` | usize | `51200` | 1024 | Max tool output size (bytes) |
-| `max_output_lines` | usize | `2000` | 10 | Max tool output lines |
+| `max_output_bytes` | usize | `51200` | 1024 | Max bytes of tool output the model sees |
+| `max_output_lines` | usize | `2000` | 10 | Max lines of tool output the model sees |
 | `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
 | `max_turn_output` | u32 | `32768` | 1024 | Output tokens one turn asks for, raised where an effort level needs the room and capped by the model's own limit |
 | `compaction_buffer` | u32 \| string | `20%` | - | Context reserved for compaction: token count or percent of the context window (e.g. "20%") |
 | `compaction_instructions` | String | `none` | - | Extra instructions appended to the compaction summary prompt |
 | `post_compaction_instructions` | String | `none` | - | Extra instructions the agent receives after any compaction (e.g. re-read plan.md) |
 | `stale_read_check` | bool | `true` | - | Require re-reading a file that changed on disk before editing it |
-| `rtk` | bool | `true` | - | Rewrite bash commands with [rtk](https://github.com/rtk-ai/rtk) when it is installed |
+| `rtk` | bool | `true` | - | Rewrite the model's bash commands with [rtk](https://github.com/rtk-ai/rtk) when it is installed |
 | `shell` | string | `auto` | - | Shell for string commands on Windows (`jobstart`, UI `!`): `auto` (Git Bash if installed, else `cmd.exe`), `cmd`, or a path to an executable |
 
 ### `provider`
@@ -250,8 +250,8 @@ maki.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool's model output. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `timeout_secs` | integer | `120` | 5 | Kill the command after this many seconds. A call's `timeout` param overrides it. |
 
 ### `plugins.code_execution`
@@ -259,8 +259,8 @@ maki.setup({
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
 | `max_memory_mb` | integer | `50` | 10 | Memory limit for the Python sandbox (MB). |
-| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool's model output. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `timeout_secs` | integer | `30` | 5 | Script execution time budget in seconds; waiting on tool calls does not count. A call's `timeout` param overrides it. |
 
 ### `plugins.completion`
@@ -281,17 +281,17 @@ maki.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool's model output. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
-| `search_result_limit` | integer | `100` | 10 | Max files returned per search in compact mode. |
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+| `search_result_limit` | integer | `100` | 10 | Max files the model sees per search. |
 
 ### `plugins.grep`
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_line_bytes` | integer | `500` | 80 | Truncate model output lines longer than this many bytes. |
-| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool's model output. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
+| `max_line_bytes` | integer | `500` | 80 | Truncate lines the model sees at this many bytes. |
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `search_result_limit` | integer | `100` | 10 | Max match groups per search. A call's `limit` param overrides it. |
 
 ### `plugins.index`
@@ -304,8 +304,8 @@ maki.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_line_bytes` | integer | `500` | 80 | Truncate model output lines longer than this many bytes. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
+| `max_line_bytes` | integer | `500` | 80 | Truncate lines the model sees at this many bytes. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 
 ### `plugins.skill`
 
@@ -324,16 +324,16 @@ maki.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool's model output. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
 
 ### `plugins.websearch`
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool's model output. |
-| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool's model output. |
+| `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
+| `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
 | `provider` | string | `"exa"` | - | Search backend: "exa" (default) or "youcom" (You.com MCP). |
 
