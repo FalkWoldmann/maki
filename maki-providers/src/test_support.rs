@@ -231,6 +231,12 @@ pub fn register_bundled(authored: Value, host: &str) {
     plugin::commit_load();
 }
 
+/// One SSE frame, so a parser test can spell its events as `json!` instead of
+/// an escaped string.
+pub fn sse_event(event: &str, data: &Value) -> String {
+    format!("event: {event}\ndata: {data}\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use std::panic::catch_unwind;

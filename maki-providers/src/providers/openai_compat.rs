@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use super::ResolvedAuth;
+use super::copilot::CopilotUsage;
 use crate::model::ModelFamily;
 use crate::types::rejects_sampling;
 use crate::{
@@ -572,6 +573,7 @@ struct SseChunk {
     #[serde(default)]
     choices: Vec<ChunkChoice>,
     usage: Option<ChunkUsage>,
+    copilot_usage: Option<CopilotUsage>,
 }
 
 struct ToolAccumulator {
@@ -652,7 +654,9 @@ pub async fn parse_sse(
                 output: u.completion_tokens,
                 cache_read: cached,
                 cache_creation: 0,
-                cost: u.cost,
+                cost: u
+                    .cost
+                    .or_else(|| chunk.copilot_usage.as_ref().map(CopilotUsage::usd)),
             };
         }
 
@@ -963,6 +967,37 @@ data: [DONE]\n";
             assert_eq!(resp.usage.input, 100, "{COUNTS_SURVIVE_A_BAD_COST}");
             assert_eq!(resp.usage.output, 10, "{COUNTS_SURVIVE_A_BAD_COST}");
             assert_eq!(resp.usage.cost, expected);
+        })
+    }
+
+    const COPILOT_NANO_AIU: u64 = 375_000;
+    const COPILOT_USD: f64 = 0.00000375;
+
+    #[test]
+    fn parse_sse_copilot_usage_prices_the_turn() {
+        smol::block_on(async {
+            let chunk = json!({
+                "choices": [{"finish_reason": "stop", "delta": {}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+                "copilot_usage": {"total_nano_aiu": COPILOT_NANO_AIU},
+            });
+            let sse = format!("data: {chunk}\n\ndata: [DONE]\n");
+
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                resp.usage,
+                TokenUsage {
+                    input: 100,
+                    output: 10,
+                    cache_creation: 0,
+                    cache_read: 0,
+                    cost: Some(COPILOT_USD),
+                }
+            );
         })
     }
 

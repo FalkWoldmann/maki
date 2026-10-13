@@ -696,7 +696,7 @@ pub(crate) async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Canned, serve};
+    use crate::test_support::{Canned, serve, sse_event};
     use crate::{
         ContentBlock, EMPTY_RESPONSE_MARKER, InputTransformation, ProviderEvent, Role, StopReason,
         TokenUsage,
@@ -963,6 +963,48 @@ data: {{\"type\":\"message_stop\"}}\n"
                     cache_creation: 5,
                     cache_read: 8,
                     cost: None,
+                }
+            );
+        })
+    }
+
+    const COPILOT_NANO_AIU: u64 = 380_000;
+    const COPILOT_USD: f64 = 0.0000038;
+
+    #[test]
+    fn parse_sse_copilot_usage_prices_the_turn() {
+        smol::block_on(async {
+            let sse_data = [
+                sse_event(
+                    "message_start",
+                    &json!({"type": "message_start", "message": {"usage": {"input_tokens": 42}}}),
+                ),
+                sse_event(
+                    "message_delta",
+                    &json!({
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 10},
+                        "copilot_usage": {"total_nano_aiu": COPILOT_NANO_AIU},
+                    }),
+                ),
+                sse_event("message_stop", &json!({"type": "message_stop"})),
+            ]
+            .concat();
+
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(mock_response(sse_data), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                resp.usage,
+                TokenUsage {
+                    input: 42,
+                    output: 10,
+                    cache_creation: 0,
+                    cache_read: 0,
+                    cost: Some(COPILOT_USD),
                 }
             );
         })
