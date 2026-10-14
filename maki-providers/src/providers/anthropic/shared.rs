@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::model::Model;
-use crate::providers::copilot::CopilotUsage;
+use crate::providers::copilot::copilot_usd;
 use crate::types::{is_deferred_tool, rejects_sampling};
 use crate::{
     AgentError, ContentBlock, EMPTY_RESPONSE_MARKER, InputTransformation, Message, ProviderEvent,
@@ -166,7 +166,7 @@ struct MessageDeltaEvent {
     #[serde(default)]
     usage: Option<Usage>,
     #[serde(default)]
-    copilot_usage: Option<CopilotUsage>,
+    copilot_usage: Option<Value>,
     /// Only after a server-side fallback, with the serving model's entries.
     #[serde(default, deserialize_with = "lenient_transformations")]
     input_transformations: Option<Vec<InputTransformation>>,
@@ -541,8 +541,8 @@ impl EventParser {
                             }
                         }
                     }
-                    if let Some(billed) = ev.copilot_usage {
-                        self.usage.cost = Some(billed.usd());
+                    if let Some(usd) = ev.copilot_usage.as_ref().and_then(copilot_usd) {
+                        self.usage.cost = Some(usd);
                     }
                     if let Some(t) = ev.input_transformations {
                         self.input_transformations = t;

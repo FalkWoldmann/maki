@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use super::ResolvedAuth;
-use super::copilot::CopilotUsage;
+use super::copilot::copilot_usd;
 use crate::model::ModelFamily;
 use crate::types::rejects_sampling;
 use crate::{
@@ -573,7 +573,7 @@ struct SseChunk {
     #[serde(default)]
     choices: Vec<ChunkChoice>,
     usage: Option<ChunkUsage>,
-    copilot_usage: Option<CopilotUsage>,
+    copilot_usage: Option<Value>,
 }
 
 struct ToolAccumulator {
@@ -656,7 +656,7 @@ pub async fn parse_sse(
                 cache_creation: 0,
                 cost: u
                     .cost
-                    .or_else(|| chunk.copilot_usage.as_ref().map(CopilotUsage::usd)),
+                    .or_else(|| chunk.copilot_usage.as_ref().and_then(copilot_usd)),
             };
         }
 
@@ -973,13 +973,17 @@ data: [DONE]\n";
     const COPILOT_NANO_AIU: u64 = 375_000;
     const COPILOT_USD: f64 = 0.00000375;
 
-    #[test]
-    fn parse_sse_copilot_usage_prices_the_turn() {
+    #[test_case(json!({"total_nano_aiu": COPILOT_NANO_AIU}), Some(COPILOT_USD) ; "billed")]
+    #[test_case(json!({"token_details": []}), None ; "no_total")]
+    #[test_case(json!({"total_nano_aiu": COPILOT_NANO_AIU as f64}), Some(COPILOT_USD) ; "float_total")]
+    #[test_case(json!({"total_nano_aiu": "375000"}), None ; "string_total")]
+    #[test_case(json!("billed"), None ; "not_an_object")]
+    fn parse_sse_copilot_usage_prices_the_turn(copilot_usage: Value, cost: Option<f64>) {
         smol::block_on(async {
             let chunk = json!({
                 "choices": [{"finish_reason": "stop", "delta": {}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 10},
-                "copilot_usage": {"total_nano_aiu": COPILOT_NANO_AIU},
+                "copilot_usage": copilot_usage,
             });
             let sse = format!("data: {chunk}\n\ndata: [DONE]\n");
 
@@ -995,9 +999,10 @@ data: [DONE]\n";
                     output: 10,
                     cache_creation: 0,
                     cache_read: 0,
-                    cost: Some(COPILOT_USD),
+                    cost,
                 }
             );
+            assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
         })
     }
 

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::model::Model;
-use crate::providers::copilot::CopilotUsage;
+use crate::providers::copilot::copilot_usd;
 use crate::providers::openai_compat::tool_parameters;
 use crate::providers::{ResolvedAuth, sse_error_status};
 use crate::types::EffortDialect;
@@ -505,9 +505,7 @@ pub(crate) async fn parse_sse(
 
                 if let Some(u) = resp.get("usage") {
                     usage = parse_usage(u);
-                    usage.cost = CopilotUsage::from_event(&parsed)
-                        .as_ref()
-                        .map(CopilotUsage::usd);
+                    usage.cost = copilot_usd(&parsed["copilot_usage"]);
                 }
 
                 let status = resp["status"].as_str().unwrap_or("completed");
@@ -532,9 +530,7 @@ pub(crate) async fn parse_sse(
                 let resp = &parsed["response"];
                 if let Some(u) = resp.get("usage") {
                     usage = parse_usage(u);
-                    usage.cost = CopilotUsage::from_event(&parsed)
-                        .as_ref()
-                        .map(CopilotUsage::usd);
+                    usage.cost = copilot_usd(&parsed["copilot_usage"]);
                 }
                 stop_reason = Some(StopReason::MaxTokens);
             }
@@ -674,14 +670,24 @@ mod tests {
     const COPILOT_NANO_AIU: u64 = 375_000;
     const COPILOT_USD: f64 = 0.00000375;
 
-    #[test_case("response.completed", "completed", StopReason::EndTurn ; "completed")]
-    #[test_case("response.incomplete", "incomplete", StopReason::MaxTokens ; "incomplete")]
-    fn parse_sse_copilot_usage_prices_the_turn(event: &str, status: &str, stop: StopReason) {
+    #[test_case("response.completed", "completed", StopReason::EndTurn, json!({"total_nano_aiu": COPILOT_NANO_AIU}), Some(COPILOT_USD) ; "completed")]
+    #[test_case("response.incomplete", "incomplete", StopReason::MaxTokens, json!({"total_nano_aiu": COPILOT_NANO_AIU}), Some(COPILOT_USD) ; "incomplete")]
+    #[test_case("response.completed", "completed", StopReason::EndTurn, json!({"token_details": []}), None ; "no_total")]
+    #[test_case("response.completed", "completed", StopReason::EndTurn, json!({"total_nano_aiu": COPILOT_NANO_AIU as f64}), Some(COPILOT_USD) ; "float_total")]
+    #[test_case("response.completed", "completed", StopReason::EndTurn, json!({"total_nano_aiu": "375000"}), None ; "string_total")]
+    #[test_case("response.completed", "completed", StopReason::EndTurn, json!("billed"), None ; "not_an_object")]
+    fn parse_sse_copilot_usage_prices_the_turn(
+        event: &str,
+        status: &str,
+        stop: StopReason,
+        copilot_usage: Value,
+        cost: Option<f64>,
+    ) {
         smol::block_on(async {
             let sse = sse_event(
                 event,
                 &json!({
-                    "copilot_usage": {"total_nano_aiu": COPILOT_NANO_AIU},
+                    "copilot_usage": copilot_usage,
                     "response": {"status": status, "usage": {"input_tokens": 100, "output_tokens": 10}},
                 }),
             );
@@ -696,7 +702,7 @@ mod tests {
                     output: 10,
                     cache_creation: 0,
                     cache_read: 0,
-                    cost: Some(COPILOT_USD),
+                    cost,
                 }
             );
             assert_eq!(resp.stop_reason, Some(stop));
