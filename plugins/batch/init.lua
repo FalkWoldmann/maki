@@ -56,7 +56,8 @@ Rules:
 - All calls run in parallel; order NOT guaranteed
 - Partial failures do not stop other calls
 - Do NOT nest batch inside batch
-- Do NOT use for dependent operations or when filtering results (use code_execution)]],
+- Do NOT use for dependent operations or when filtering results (use code_execution)
+- A todo_write update is independent of everything else: include it in the batch for the next step]],
   MAX_BATCH_SIZE
 )
 

@@ -18,11 +18,10 @@ local STATUS_MARKERS = {
 
 local DESCRIPTION = [[Create or update a structured todo list to track tasks.
 
-**Use after EACH completed step!**
-
+- Use ONLY for multi-step work (3+ steps); skip for trivial tasks.
 - Send the complete list each time (replace-all semantics).
-- Use ONLY for multi-step work (3+ steps).
-- Skip for trivial tasks.]]
+- Never call it in a turn of its own: put the update in the same batch as the next step's tool calls.
+- No final update once the work is done; the list is cleared when the turn ends.]]
 
 local function items_of(sid, task)
   return todos[sid] and todos[sid][task] or {}
@@ -102,7 +101,7 @@ end
 
 maki.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- Use todo_write for multi-step tasks (3+ steps); update **after EACH step** (done + next in_progress), never batched at the end.",
+  content = "- Use todo_write for multi-step tasks (3+ steps). Put each update in the same batch as the next step's tool calls, never in a turn of its own, and skip the final update once the work is done.",
 })
 
 maki.api.register_tool({
