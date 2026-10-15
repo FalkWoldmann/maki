@@ -2,6 +2,7 @@ local truncate = require("maki.truncate")
 local ToolView = require("maki.tool_view")
 local output_limits = require("maki.output_limits")
 local partial = require("maki.partial")
+local quiet_flags = require("quiet_flags")
 
 local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_UNSUPPORTED_FLAGS = {
@@ -111,9 +112,6 @@ local function run_rtk(cmd)
 end
 
 local function rtk_rewrite(command, ctx)
-  if ctx:output_mode() == "full" then
-    return nil
-  end
   local config = ctx:config()
   if config and not config.rtk then
     return nil
@@ -263,7 +261,8 @@ Commands run in the session's working directory (see Environment) by default.
 - Provide a short `description` (3-5 words).
 - Output sent to the model is truncated beyond 2000 lines or 50KB.
 - Interactive commands (sudo, ssh prompts) fail immediately.
-- Use the `tail` param, not `| tail`: piping hides live output.]]
+- Use the `tail` param, not `| tail`: piping hides live output.
+- Build and test commands get quiet flags; your own verbosity or format flag turns them off.]]
 
 maki.api.register_prompt_hint({
   slot = "tool_usage",
@@ -275,6 +274,10 @@ local opts = maki.api.register_options(output_limits.extend({
     default = 120,
     min = 5,
     desc = "Kill the command after this many seconds. A call's `timeout` param overrides it.",
+  },
+  quiet = {
+    default = true,
+    desc = "Add quiet flags (`cargo test -q`, `git log --oneline`) to the model's build, test and package commands unless it passed its own verbosity or format flag, or sends the output elsewhere.",
   },
 }))
 
@@ -378,9 +381,8 @@ maki.api.register_tool({
 
     ctx:set_deadline(timeout_secs)
 
-    local rewritten = rtk_rewrite(command, ctx)
-    if rewritten then
-      command = rewritten
+    if ctx:output_mode() ~= "full" then
+      command = rtk_rewrite(command, ctx) or (opts.quiet and quiet_flags.rewrite(command)) or command
     end
 
     local buf, view = create_bash_view(command, ctx)

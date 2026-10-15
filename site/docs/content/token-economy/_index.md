@@ -44,6 +44,8 @@ one line stays              ~20k tokens never seen
 
 **Capped tool output.** Tool output the model sees is capped (`agent.max_output_bytes`, `agent.max_output_lines`), and long lines from read and grep are clipped. Every built-in tool description tells the model to read only what it needs.
 
+**Quiet flags.** The bash tool adds the flag that makes a tool print only failures and totals: `cargo test -q`, `cargo nextest run --status-level fail`, `git log --oneline`, `pytest -q`, `pip install -q`, `npm install --no-fund`. In a plain `cargo test` three quarters of the output is `test ... ok` and `Compiling` lines, which the model never acts on. The flag is skipped when the model passed its own verbosity or format flag (including `--no-run` and `-- --nocapture`, whose point is the omitted lines), and when the output goes to a pipe, a file or a substitution. The rewritten command shows in the UI. `plugins.bash.quiet = false` turns it off, and when [rtk](https://github.com/rtk-ai/rtk) is installed and `agent.rtk` is on, rtk's rewrite runs instead.
+
 **Interrupted work is not wasted.** Press Esc on a long tool, or let its deadline hit, and whatever it printed so far still reaches the model, tagged as partial: bash keeps its streamed lines, `code_execution` the script output, a `task` subagent its half transcript. Otherwise the next turn starts from nothing and you pay to run it all again.
 
 ## Fewer round-trips
@@ -52,7 +54,7 @@ Every round-trip re-sends the context, so round-trips are the other half of the 
 
 **batch** runs independent tool calls in one turn: one request, N results.
 
-**code_execution** goes further: a Python sandbox where tools are async functions. Chained calls, loops, and filtering happen inside the sandbox, and only what the script prints or returns enters context. Tools called from Python return complete output, without the caps or RTK rewriting, so the script can parse it.
+**code_execution** goes further: a Python sandbox where tools are async functions. Chained calls, loops, and filtering happen inside the sandbox, and only what the script prints or returns enters context. Tools called from Python return complete output, without the caps, quiet flags or RTK rewriting, so the script can parse it.
 
 ```
 without                          with code_execution
