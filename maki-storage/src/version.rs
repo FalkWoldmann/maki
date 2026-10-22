@@ -1,5 +1,3 @@
-use std::io;
-use std::process::Command;
 use std::time::Duration;
 
 use async_compat::Compat;
@@ -22,8 +20,6 @@ pub enum VersionError {
     InvalidResponse(&'static str),
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("curl failed: {0}")]
-    Curl(#[from] io::Error),
 }
 
 pub fn is_newer(latest: &str, current: &str) -> bool {
@@ -68,26 +64,6 @@ fn parse_tag(bytes: &[u8]) -> Result<String, VersionError> {
     Ok(tag.strip_prefix('v').unwrap_or(tag).to_owned())
 }
 
-/// Fallback for TLS-inspecting proxies (e.g. Cloudflare WARP): system `curl`
-/// trusts the OS certificate store, which our statically linked OpenSSL
-/// cannot read. Callers keep their original error when this also fails,
-/// since the TLS error is the useful one to show.
-pub fn curl_fetch(url: &str) -> io::Result<Vec<u8>> {
-    let max_time = CONNECT_TIMEOUT + REQUEST_TIMEOUT;
-    let out = Command::new("curl")
-        .args(["-fsSL", "-A", "maki", "--max-time"])
-        .arg(max_time.as_secs().to_string())
-        .arg(url)
-        .output()?;
-    if !out.status.success() {
-        return Err(io::Error::other(format!(
-            "curl failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(out.stdout)
-}
-
 pub async fn fetch_latest() -> Result<String, VersionError> {
     Compat::new(async {
         let resp = request(&version_client()?).send().await?;
@@ -97,11 +73,6 @@ pub async fn fetch_latest() -> Result<String, VersionError> {
         parse_tag(&resp.bytes().await?)
     })
     .await
-}
-
-/// Blocking, for callers that already fell back to [`curl_fetch`].
-pub fn curl_fetch_latest() -> Result<String, VersionError> {
-    parse_tag(&curl_fetch(RELEASES_URL)?)
 }
 
 #[cfg(test)]

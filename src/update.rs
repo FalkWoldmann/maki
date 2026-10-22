@@ -90,11 +90,6 @@ fn fetch_script() -> Result<String, UpdateError> {
         url: INSTALLER.url,
         source,
     })
-    .or_else(|e| {
-        version::curl_fetch(INSTALLER.url)
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .map_err(|_| e)
-    })
 }
 
 /// Where `maki update` keeps the binary it replaced, for `maki rollback`.
@@ -216,8 +211,7 @@ fn prompt_yes(install_dir: &Path) -> bool {
 }
 
 pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
-    let latest = smol::block_on(version::fetch_latest())
-        .or_else(|e| version::curl_fetch_latest().map_err(|_| e))?;
+    let latest = smol::block_on(version::fetch_latest())?;
     if !version::is_newer(&latest, version::CURRENT) {
         println!("Already up to date (v{})", version::CURRENT);
         return Ok(());
