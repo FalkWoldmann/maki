@@ -6,10 +6,13 @@ use std::io::Write;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use async_compat::Compat;
 use flate2::Compression as GzipLevel;
 use flate2::write::GzEncoder;
-use isahc::config::{Configurable, VersionNegotiation};
-use isahc::{AsyncReadResponseExt, HttpClient, ResponseExt};
+use http_body_util::BodyExt;
+use reqwest::header::HeaderMap;
+use reqwest::redirect::Policy;
+use reqwest::{Client, ClientBuilder};
 use thiserror::Error;
 
 use crate::encode::otlp::{LogsPayload, MetricsPayload};
@@ -31,6 +34,7 @@ const CONTENT_TYPE_JSON: &str = "application/json";
 const CONTENT_TYPE_GRPC: &str = "application/grpc+proto";
 const ENCODING_GZIP: &str = "gzip";
 const TE_TRAILERS: &str = "trailers";
+const USER_AGENT: &str = "maki";
 
 const GRPC_OK: i64 = 0;
 const GRPC_DEADLINE_EXCEEDED: i64 = 4;
@@ -53,7 +57,7 @@ pub enum ExportError {
     #[error("collector answered gRPC status {code}: {message}")]
     Grpc { code: i64, message: String },
     #[error("request failed: {0}")]
-    Request(#[from] isahc::Error),
+    Request(#[from] reqwest::Error),
     #[error("export did not finish within {0:?}")]
     Timeout(Duration),
 }
@@ -92,19 +96,14 @@ impl Transport for ConsoleTransport {
 }
 
 pub struct OtlpTransport {
-    client: HttpClient,
+    client: Client,
     settings: SignalSettings,
 }
 
 impl OtlpTransport {
-    pub fn new(settings: SignalSettings) -> Result<Self, isahc::Error> {
-        let mut builder = HttpClient::builder().timeout(settings.timeout);
-        if settings.protocol == Protocol::Grpc {
-            // Cleartext h2c needs prior knowledge; curl will not upgrade for us.
-            builder = builder.version_negotiation(VersionNegotiation::http2());
-        }
+    pub fn new(settings: SignalSettings) -> Result<Self, reqwest::Error> {
         Ok(Self {
-            client: builder.build()?,
+            client: client(&settings).build()?,
             settings,
         })
     }
@@ -131,7 +130,7 @@ impl OtlpTransport {
         let grpc = self.settings.protocol == Protocol::Grpc;
         let gzip = self.settings.compression == Compression::Gzip;
 
-        let mut request = isahc::Request::post(&self.settings.url).header(
+        let mut request = self.client.post(&self.settings.url).header(
             HEADER_CONTENT_TYPE,
             match self.settings.protocol {
                 Protocol::Grpc => CONTENT_TYPE_GRPC,
@@ -157,35 +156,35 @@ impl OtlpTransport {
             request = request.header(key.as_str(), value.as_str());
         }
 
-        let request = request.body(body.to_vec()).map_err(isahc::Error::from)?;
-        let mut response = self.client.send_async(request).await?;
+        let request = request.body(body.to_vec());
+        let (response, collected) = Compat::new(async {
+            let (response, body) = http::Response::from(request.send().await?).into_parts();
+            // The body must be drained before trailers are readable, and reading
+            // it also gives us the error text on a plain HTTP failure.
+            Ok::<_, reqwest::Error>((response, body.collect().await.ok()))
+        })
+        .await?;
+        let (trailers, body) = collected.map_or_else(Default::default, |collected| {
+            (
+                collected.trailers().cloned().unwrap_or_default(),
+                collected.to_bytes(),
+            )
+        });
+        let body = String::from_utf8_lossy(&body);
 
-        let status = response.status().as_u16();
-        let grpc_status_header = header(&response, HEADER_GRPC_STATUS);
-        let grpc_message = header(&response, HEADER_GRPC_MESSAGE);
-        let retry_after = header(&response, HEADER_RETRY_AFTER);
-
-        // The body must be drained before trailers are readable, and reading it
-        // also gives us the error text on a plain HTTP failure.
-        let body = response.text().await.unwrap_or_default();
+        let status = response.status.as_u16();
+        let grpc_message = header(&response.headers, HEADER_GRPC_MESSAGE);
+        let retry_after = header(&response.headers, HEADER_RETRY_AFTER);
 
         if grpc {
-            let code = grpc_status_header
-                .as_deref()
-                .and_then(|v| v.parse::<i64>().ok())
-                .or_else(|| {
-                    response
-                        .trailer()
-                        .try_get()
-                        .and_then(|t| t.get(HEADER_GRPC_STATUS))
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<i64>().ok())
-                });
+            let grpc_status =
+                |headers| header(headers, HEADER_GRPC_STATUS).and_then(|v| v.parse::<i64>().ok());
+            let code = grpc_status(&response.headers).or_else(|| grpc_status(&trailers));
             return match code {
                 Some(GRPC_OK) => Ok(()),
                 Some(code) => Err(ExportError::Grpc {
                     code,
-                    message: grpc_message.unwrap_or_else(|| truncate(&body)),
+                    message: grpc_message.map_or_else(|| truncate(&body), str::to_string),
                 }),
                 // No status at all means the server never spoke gRPC.
                 None => Err(ExportError::Http {
@@ -232,12 +231,22 @@ impl Transport for OtlpTransport {
     }
 }
 
-fn header(response: &isahc::Response<isahc::AsyncBody>, name: &str) -> Option<String> {
-    response
-        .headers()
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
+/// Redirects stay off, as with isahc.
+fn client(settings: &SignalSettings) -> ClientBuilder {
+    let builder = Client::builder()
+        .timeout(settings.timeout)
+        .redirect(Policy::none())
+        .user_agent(USER_AGENT);
+    if settings.protocol == Protocol::Grpc {
+        // Cleartext h2c needs prior knowledge; hyper will not upgrade for us.
+        builder.http2_prior_knowledge()
+    } else {
+        builder
+    }
+}
+
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
 }
 
 fn truncate(body: &str) -> String {
@@ -434,14 +443,17 @@ mod http_tests {
     }
 
     fn transport(url: String, compression: Compression) -> OtlpTransport {
-        OtlpTransport::new(SignalSettings {
+        let settings = SignalSettings {
             protocol: Protocol::HttpProtobuf,
             url,
             headers: vec![(HEADER_KEY.to_string(), HEADER_VALUE.to_string())],
             timeout: Duration::from_secs(5),
             compression,
-        })
-        .expect("build transport")
+        };
+        OtlpTransport {
+            client: client(&settings).no_proxy().build().expect("build client"),
+            settings,
+        }
     }
 
     fn sample_metrics() -> Vec<MetricData> {
