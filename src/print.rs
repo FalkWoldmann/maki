@@ -18,7 +18,7 @@ use color_eyre::eyre::{Context, eyre};
 use maki_agent::headless::{self, HeadlessHandle, HeadlessParams};
 use maki_agent::permissions::PluginRuleStore;
 use maki_agent::session::Resumed;
-use maki_agent::tools::QUESTION_TOOL_NAME;
+use maki_agent::tools::{QUESTION_TOOL_NAME, TODOWRITE_TOOL_NAME};
 use maki_agent::{
     AgentConfig, AgentEvent, DoneReason, Envelope, ImageSource, PermissionsConfig, SteerKind,
 };
@@ -215,7 +215,7 @@ pub fn run(params: PrintParams) -> Result<()> {
         prompt,
         images,
         prompt_slots,
-        excluded_tools: vec![QUESTION_TOOL_NAME],
+        excluded_tools: vec![QUESTION_TOOL_NAME, TODOWRITE_TOOL_NAME],
         mcp_handle,
         initial_wd: cwd,
         resumed,
