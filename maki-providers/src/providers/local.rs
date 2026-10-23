@@ -13,7 +13,7 @@ use maki_config::providers::Protocol;
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
 use crate::types::ThinkingFallback;
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::{AgentError, Effort, Message, ProviderEvent, RequestOptions, StreamResponse};
 
 use super::openai::responses;
 use super::openai_compat::{DEFAULT_MAX_TOKENS_FIELD, OpenAiCompatConfig, OpenAiCompatProvider};
@@ -30,6 +30,12 @@ pub(crate) struct LocalEndpointConfig {
     pub discovery_mode: DiscoveryMode,
     pub compat: OpenAiCompatConfig,
     pub thinking_fallback: ThinkingFallback,
+}
+
+impl LocalEndpointConfig {
+    pub(crate) fn adaptive_effort(&self, model: &Model) -> Option<Effort> {
+        self.thinking_fallback.adaptive_effort(model)
+    }
 }
 
 fn resolve_protocol_for_local(slug: &str) -> Option<Protocol> {

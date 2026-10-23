@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
-use maki_config::providers::{OverrideFields, Protocol, ProviderOverride};
+use maki_config::providers::{OverrideFields, Protocol, ProviderOverride, ProvidersConfig};
 use serde_json::Value;
 use tracing::warn;
 
@@ -13,7 +13,7 @@ use crate::spec::{
     AuthDoc, Build, CatalogDoc, GeneratedDocs, LoginConfig, NO_CURATED_MODELS, Native,
     ProviderRegistry, ProviderSpec,
 };
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::{AgentError, Effort, Message, ProviderEvent, RequestOptions, StreamResponse};
 use maki_storage::id::SessionRef;
 
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
@@ -56,6 +56,7 @@ pub(crate) const SPEC: ProviderSpec = ProviderSpec {
     family: ModelFamily::Generic,
     supports_thinking: false,
     supports_deferred_tools: false,
+    adaptive_effort,
     accepts_arbitrary_models: true,
     fallback_max_output: Some(16_384),
     fallback_context_window: 128_000,
@@ -102,12 +103,36 @@ type Overrides = HashMap<String, ProviderOverride>;
 /// Load per-gateway-provider overrides from the `aperture` entry's `overrides`
 /// table in `providers.toml`.
 fn load_overrides() -> Overrides {
-    let overrides = maki_config::providers::ProvidersConfig::load()
+    let overrides = ProvidersConfig::load()
         .get("aperture")
         .map(|d| d.overrides.clone())
         .unwrap_or_default();
     validate_overrides(&overrides);
     overrides
+}
+
+/// Runs on every frame of the status bar, so a broken `providers.toml` reads
+/// as no overrides instead of exiting.
+fn adaptive_effort(model: &Model) -> Option<Effort> {
+    let config = ProvidersConfig::load_or_default();
+    let overrides = config.get(SLUG).map(|def| &def.overrides);
+    routed_adaptive_effort(overrides.unwrap_or(&Overrides::new()), model)
+}
+
+/// The routed provider builds the request, so it answers, about the model as
+/// its own: a plugin codec finds its declaration and discovery by its slug.
+/// A model that routes nowhere takes the generic path, which sends no effort.
+fn routed_adaptive_effort(overrides: &Overrides, model: &Model) -> Option<Effort> {
+    let (provider_id, model_id) = model.id.split_once('/')?;
+    let spec = routed_spec(
+        provider_id,
+        &merged_override(overrides, provider_id, model_id),
+    )?;
+    let routed = Model {
+        provider: Arc::from(spec.slug),
+        ..native_route_model(model, spec, model_id)
+    };
+    (spec.adaptive_effort)(&routed)
 }
 
 /// Warn about `base` values that don't name an OpenAI-compatible provider, so a
@@ -273,7 +298,7 @@ fn resolve_base_url() -> Result<String, AgentError> {
     {
         return Ok(trim_slash(url));
     }
-    if let Some(url) = maki_config::providers::ProvidersConfig::load()
+    if let Some(url) = ProvidersConfig::load()
         .get("aperture")
         .and_then(|d| d.base_url.clone())
         .filter(|u| !u.trim().is_empty())
@@ -460,6 +485,7 @@ mod tests {
                 "slug": ROUTED_SLUG,
                 "display_name": "Routed",
                 "codec": "openai",
+                "openai": { "thinking": { "dialect": "high-only" } },
                 "aperture": { "path_prefix": DEFAULT_PATH_PREFIX },
                 "models": [{ "prefixes": [ROUTED_VISION_MODEL], "supports_vision": true }],
             }),
@@ -530,6 +556,35 @@ mod tests {
             native_route_model(&model, route(slug), bare).id,
             expected_id
         );
+    }
+
+    /// The route answers as it sends: a plugin codec by its own declaration,
+    /// which it only finds under its own slug, not under `aperture`.
+    #[test_case("aperture/zai/glm-5.3", None, Some(Effort::High) ; "zai_route_sends_high")]
+    #[test_case("aperture/ollama/qwen3", None, Some(Effort::Medium) ; "ollama_route_sends_medium")]
+    #[test_case("aperture/anthropic/claude-sonnet-4-5", None, None ; "anthropic_route_keeps_the_mode")]
+    #[test_case(ROUTED_CHAT_SPEC, None, Some(Effort::High) ; "codec_route_sends_its_dialect_level")]
+    #[test_case("aperture/ikora-openai/gemma4", None, None ; "unrouted_sends_no_effort")]
+    #[test_case("aperture/ikora-openai/gemma4", Some("zai"), Some(Effort::High) ; "base_override_answers_for_its_route")]
+    #[test_case("aperture/zai/glm-5.3", Some("anthropic"), None ; "base_override_wins_over_the_vendor")]
+    fn adaptive_effort_is_the_routed_providers(
+        spec: &str,
+        base: Option<&str>,
+        expected: Option<Effort>,
+    ) {
+        register_routed();
+        let model = Model::from_spec(spec).unwrap();
+        let vendor = model.id.split_once('/').unwrap().0;
+        let overrides = Overrides::from_iter(base.map(|base| {
+            (
+                vendor.to_string(),
+                ProviderOverride {
+                    default: base_override(base),
+                    models: HashMap::new(),
+                },
+            )
+        }));
+        assert_eq!(routed_adaptive_effort(&overrides, &model), expected);
     }
 
     #[test]

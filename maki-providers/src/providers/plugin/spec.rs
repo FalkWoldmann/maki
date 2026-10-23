@@ -14,7 +14,7 @@ use crate::spec::{
     NO_CURATED_MODELS, ProviderSpec,
 };
 
-use super::{ProviderDecl, Target};
+use super::{ProviderDecl, Target, declared_adaptive_effort};
 
 /// What a codec-backed provider assumes about a model nobody described, the
 /// same conservative limits the other bring-your-own-endpoint providers use.
@@ -82,6 +82,10 @@ fn spec_row(decl: &ProviderDecl, target: Target, models: &'static [ModelEntry]) 
         family: decl.family.unwrap_or(native.family),
         supports_thinking: native.supports_thinking,
         supports_deferred_tools: false,
+        adaptive_effort: match target {
+            Target::Base(spec) => spec.adaptive_effort,
+            Target::Codec(_) => declared_adaptive_effort,
+        },
         accepts_arbitrary_models: decl
             .accepts_arbitrary_models
             .unwrap_or(accepts_arbitrary_models),

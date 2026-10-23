@@ -34,7 +34,10 @@ use crate::providers::openai_compat::{
 };
 use crate::providers::{ResolvedAuth, Timeouts, http_client, opencode, plugin, user_agent};
 use crate::spec::ProviderRegistry;
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{
+    AgentError, Effort, EffortDialect, Message, ProviderEvent, RequestOptions, StreamResponse,
+    dialect,
+};
 
 const MESSAGES_PATH: &str = "/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -51,6 +54,9 @@ const BUILTIN_CATALOG_IDS: &[(&str, &str)] =
 /// Builtins with no native client of their own, so a spec row knowing them
 /// must not drop them from the catalog.
 pub(crate) const CATALOG_BACKED_BUILTINS: &[&str] = opencode::SLUGS;
+
+/// How the chat completions wire spells effort.
+const CHAT_DIALECT: EffortDialect<'static> = dialect::PREFER_HIGH;
 
 /// Provider modules own their entry here; the catalog only reads it.
 const QUIRKS: &[(&[&str], ProviderQuirks)] = &[(opencode::SLUGS, opencode::QUIRKS)];
@@ -513,6 +519,16 @@ fn with_provider_if_available<T>(slug: &str, f: impl FnOnce(&ProviderData) -> T)
     guard.providers.get(slug).map(f)
 }
 
+/// The level a catalog provider's wire sends for `adaptive`. The messages
+/// wire spells thinking its own way, and a cold catalog gives nothing.
+pub(crate) fn adaptive_effort_if_available(slug: &str) -> Option<Effort> {
+    with_provider_if_available(slug, |data| match data.api_format {
+        EndpointType::ChatCompletions => CHAT_DIALECT.adaptive_effort(),
+        EndpointType::Messages => None,
+    })
+    .flatten()
+}
+
 /// The env var each catalog provider reads its key from, if one is set. A cold
 /// catalog gives nothing, because a fetch here would stall every spawn.
 pub(crate) fn key_vars_if_available() -> Vec<String> {
@@ -797,7 +813,7 @@ impl CatalogTransport {
                     auth.top_p,
                 );
                 opts.thinking
-                    .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
+                    .apply_reasoning_effort(&mut body, &CHAT_DIALECT, model);
                 self.chat_compat
                     .do_stream(model, &[], &body, event_tx, auth)
                     .await
@@ -1084,7 +1100,7 @@ mod tests {
     use crate::provider::Provider;
     use crate::providers::{ResolvedAuth, Timeouts, opencode};
     use crate::spec::ProviderRegistry;
-    use crate::{AgentError, ModelFamily, ModelTier, RequestOptions};
+    use crate::{AgentError, Effort, ModelFamily, ModelTier, RequestOptions};
     use test_case::test_case;
 
     const SESSION_HEADER: &str = "x-opencode-session";
@@ -1116,6 +1132,10 @@ mod tests {
     /// Stands in for `OPENCODE_API_KEY`, which a dev running the tests may
     /// well have set, and then the free fallback would never kick in.
     const UNSET_KEY_ENV: &str = "MAKI_TEST_UNSET_KEY";
+    const CHAT_NPM: &str = "@ai-sdk/openai-compatible";
+    const MESSAGES_NPM: &str = "@ai-sdk/anthropic";
+    const CATALOG_API_URL: &str = "https://catalog.example/v1";
+    const LISTED_MODEL: &str = "listed";
 
     #[test]
     fn new_rejects_no_auth() {
@@ -2012,6 +2032,33 @@ mod tests {
             Some(BUILTIN_BASE_URL),
             models,
         )
+    }
+
+    /// Opencode and catalog providers answer by the wire the catalog serves
+    /// them on: chat completions sends a level for `adaptive`, the messages
+    /// wire spells the mode itself. A Zen id can name its sub-provider.
+    #[test_case("opencode/listed", Some(Effort::High) ; "zen_on_chat_completions")]
+    #[test_case("opencode/messages-sub/listed", None ; "zen_sub_provider_on_messages")]
+    #[test_case("opencode-go/listed", None ; "go_on_messages")]
+    #[test_case("chat-catalog/listed", Some(Effort::High) ; "catalog_provider_on_chat_completions")]
+    #[test_case("messages-sub/listed", None ; "catalog_provider_on_messages")]
+    fn adaptive_effort_follows_the_catalog_wire(spec: &str, expected: Option<Effort>) {
+        let (_tmp, state_dir) = temp_state_dir();
+        let index = [
+            ("opencode", CHAT_NPM),
+            ("opencode-go", MESSAGES_NPM),
+            ("messages-sub", MESSAGES_NPM),
+            ("chat-catalog", CHAT_NPM),
+        ]
+        .into_iter()
+        .flat_map(|(id, npm)| {
+            let models = HashMap::from([(LISTED_MODEL.into(), CatalogModel::default())]);
+            catalog_index(id, npm, Some(CATALOG_API_URL), models)
+        })
+        .collect();
+        super::seed_catalog_for_tests(index, state_dir);
+
+        assert_eq!(Model::from_spec(spec).unwrap().adaptive_effort(), expected);
     }
 
     #[test]

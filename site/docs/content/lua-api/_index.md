@@ -3797,9 +3797,14 @@ send for that row and is absent on `off` and `adaptive`. It is empty exactly
 when `supports_thinking` is false, so a picker can render the ladder from it
 without knowing the levels.
 
+A model whose API has no adaptive mode leaves `adaptive` out of the ladder.
+A session set to `adaptive` keeps that in `thinking`, and `thinking_shown`
+names the level it is sent as, which is the row to highlight. Everywhere
+else the two are equal.
+
 **Returns:** (`table|nil`, `string|nil`) `{spec, id, provider, thinking,
-  thinking_options, fast, supports_thinking, supports_fast}`, or nil and an
-  error.
+  thinking_shown, thinking_options, fast, supports_thinking,
+  supports_fast}`, or nil and an error.
 
 **Example:**
 

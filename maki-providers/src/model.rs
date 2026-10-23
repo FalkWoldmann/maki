@@ -667,6 +667,20 @@ impl Model {
         self.thinking_override == Some(ThinkingSupport::Required)
     }
 
+    /// The level `adaptive` is sent as for this model, or `None` where the
+    /// API picks the depth itself. Such a level is all `adaptive` is here, so
+    /// the ladder leaves the row out. Every provider answers on its spec row.
+    /// A `providers.toml` slug borrows a native row for its protocol but not
+    /// its dialect: its codec sends nothing for a mode the model does not
+    /// spell. An id only models.dev knows goes by the wire it is served on.
+    pub fn adaptive_effort(&self) -> Option<Effort> {
+        match ProviderRegistry::get(&self.provider) {
+            Some(spec) => (spec.adaptive_effort)(self),
+            None if custom::is_declared(&self.provider) => None,
+            None => catalog::adaptive_effort_if_available(&self.provider),
+        }
+    }
+
     /// Vision support, most specific first: per-model override, discovery,
     /// [`ModelSources`], the family default.
     pub fn supports_vision(&self) -> bool {
@@ -733,7 +747,11 @@ impl Model {
         (!self.requires_thinking())
             .then_some(THINKING_OFF)
             .into_iter()
-            .chain([THINKING_ADAPTIVE])
+            .chain(
+                self.adaptive_effort()
+                    .is_none()
+                    .then_some(THINKING_ADAPTIVE),
+            )
             .map(|name| ThinkingOption { name, tokens: None })
             .chain(Effort::ALL.map(|level| ThinkingOption {
                 name: level.as_str(),
@@ -1936,6 +1954,40 @@ mod tests {
         let options = ladder_model(support, Some(ROOMY_OUTPUT)).thinking_options();
         let names: Vec<&str> = options.iter().map(|option| option.name).collect();
         assert_eq!(names, expected);
+    }
+
+    /// `adaptive` promises that the API picks the depth, so a provider that
+    /// sends one fixed level for it must not offer the row. A slug nothing
+    /// describes keeps it, since nobody said otherwise.
+    #[test_case("anthropic", true ; "api_with_an_adaptive_mode_offers_it")]
+    #[test_case("xai", false ; "fixed_level_drops_it")]
+    #[test_case("no-such-provider", true ; "undescribed_provider_offers_it")]
+    fn thinking_options_offer_adaptive_only_where_the_api_decides(provider: &str, offered: bool) {
+        let model = Model {
+            provider: Arc::from(provider),
+            ..ladder_model(ThinkingSupport::Yes, Some(ROOMY_OUTPUT))
+        };
+
+        let options = model.thinking_options();
+        let names: Vec<&str> = options.iter().map(|option| option.name).collect();
+        let expected: Vec<&str> = LADDER
+            .into_iter()
+            .filter(|name| offered || *name != THINKING_ADAPTIVE)
+            .collect();
+        assert_eq!(names, expected);
+    }
+
+    /// Each provider's own word on what it sends for `adaptive`, the levels
+    /// `effort_str` renders for the same models.
+    #[test_case("anthropic/claude-sonnet-4-5", None ; "anthropic_decides")]
+    #[test_case("google/gemini-2.5-pro", None ; "google_decides")]
+    #[test_case("llama-cpp/default", None ; "llama_cpp_decides")]
+    #[test_case("openai/gpt-5.6-terra", Some(Effort::Medium) ; "openai_sends_medium")]
+    #[test_case("ollama/qwen3", Some(Effort::Medium) ; "ollama_sends_medium")]
+    #[test_case("xai/grok-4.6", Some(Effort::High) ; "xai_sends_high")]
+    #[test_case("zai/glm-5.3", Some(Effort::High) ; "zai_sends_high")]
+    fn adaptive_effort_is_the_level_the_provider_sends(spec: &str, expected: Option<Effort>) {
+        assert_eq!(Model::from_spec(spec).unwrap().adaptive_effort(), expected);
     }
 
     /// The numbers are [`Effort::budget`]'s, so what this pins is which ceiling

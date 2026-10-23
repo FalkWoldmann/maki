@@ -8,13 +8,13 @@ use crate::model::{Model, ModelFamily, ModelInfo};
 use crate::provider::{BoxFuture, Provider};
 use crate::providers::catalog::{
     CatalogMeta, CatalogTransport, EndpointType, FreeTier, ProviderQuirks,
-    init_shared_catalog_if_needed,
+    adaptive_effort_if_available, init_shared_catalog_if_needed,
 };
 use crate::spec::{
     AuthDoc, Build, CatalogDoc, GENERIC_DISCOVERY_NOTE, GeneratedDocs, NO_CURATED_MODELS, Native,
     ProviderSpec,
 };
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::{AgentError, Effort, Message, ProviderEvent, RequestOptions, StreamResponse};
 
 use super::{ResolvedAuth, Timeouts, with_prefix};
 
@@ -50,6 +50,7 @@ pub(crate) const ZEN_SPEC: ProviderSpec = ProviderSpec {
     family: ModelFamily::Generic,
     supports_thinking: true,
     supports_deferred_tools: false,
+    adaptive_effort,
     accepts_arbitrary_models: true,
     fallback_max_output: Some(128_000),
     fallback_context_window: 256_000,
@@ -77,6 +78,7 @@ pub(crate) const GO_SPEC: ProviderSpec = ProviderSpec {
     family: ModelFamily::Generic,
     supports_thinking: false,
     supports_deferred_tools: false,
+    adaptive_effort: |_| adaptive_effort_if_available(GO_SLUG),
     accepts_arbitrary_models: true,
     fallback_max_output: Some(64_000),
     fallback_context_window: 128_000,
@@ -93,6 +95,16 @@ pub(crate) const GO_SPEC: ProviderSpec = ProviderSpec {
         trailing_notes: &[],
     },
 };
+
+/// Zen ids name the sub-provider that serves them, as
+/// [`Opencode::stream_message`] reads them.
+fn adaptive_effort(model: &Model) -> Option<Effort> {
+    let sub_provider = model
+        .id
+        .split_once('/')
+        .map_or(ZEN_SLUG, |(sub_provider, _)| sub_provider);
+    adaptive_effort_if_available(sub_provider)
+}
 
 fn create(timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     Ok(Box::new(Opencode::new(timeouts)))

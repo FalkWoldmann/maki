@@ -20,7 +20,9 @@ use crate::model_registry;
 use crate::provider::{BoxFuture, Provider};
 use crate::spec::ProviderSpec;
 use crate::types::{EffortDialect, ThinkingFallback, dialect, merge_body};
-use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
+use crate::{
+    AgentError, Effort, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse,
+};
 
 /// Where effort goes when a declaration names a dialect and no field: the
 /// openai chat API's own spelling.
@@ -213,16 +215,24 @@ impl OpenAiWire {
 }
 
 impl ThinkingWire {
+    fn dialect_for<'a>(&'a self, discovered: Option<&'a ModelInfo>) -> EffortDialect<'a> {
+        match discovered.and_then(|row| row.effort.as_ref()) {
+            Some(effort) => effort.refine(self.dialect),
+            None => self.dialect.clone(),
+        }
+    }
+
+    pub(crate) fn adaptive_effort(&self, discovered: Option<&ModelInfo>) -> Option<Effort> {
+        self.dialect_for(discovered).adaptive_effort()
+    }
+
     /// The declared dialect, narrowed by what discovery listed for the model,
     /// renders the effort: one snap, against the levels the model accepts.
     fn apply(&self, body: &mut Value, ctx: &RequestCtx) {
         if self.requires_support && !ctx.model.supports_thinking() {
             return;
         }
-        let dialect = match ctx.discovered.as_ref().and_then(|row| row.effort.as_ref()) {
-            Some(effort) => effort.refine(self.dialect),
-            None => self.dialect.clone(),
-        };
+        let dialect = self.dialect_for(ctx.discovered.as_ref());
         if let Some(effort) = ctx.opts.thinking.effort_str(&dialect, ctx.model)
             && let Some(object) = body.as_object_mut()
         {

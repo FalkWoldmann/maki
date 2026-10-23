@@ -9,6 +9,8 @@ local MODEL_ID = "claude-opus-5"
 local WIDE = 52
 local NARROW = 30
 local MEDIUM = "medium"
+local ADAPTIVE = "adaptive"
+local HIGH = "high"
 local RAW_BUDGET = "8192"
 local REJECTED = "Usage: /thinking [off|adaptive|minimal|low|medium|high|xhigh|max|<budget>]"
 local UNSUPPORTED = "Thinking requires a model that supports it"
@@ -36,10 +38,20 @@ local CLAMPED_LADDER = {
   { name = "max", tokens = 1024 },
 }
 
-local function model_with(thinking, options)
+-- What a model without an adaptive mode offers: the host's ladder minus that
+-- row.
+local FIXED_LADDER = {}
+for _, option in ipairs(LADDER) do
+  if option.name ~= ADAPTIVE then
+    FIXED_LADDER[#FIXED_LADDER + 1] = option
+  end
+end
+
+local function model_with(thinking, options, shown)
   return {
     id = MODEL_ID,
     thinking = thinking,
+    thinking_shown = shown or thinking,
     thinking_options = options or LADDER,
   }
 end
@@ -95,6 +107,28 @@ end
 
 case("the_picker_opens_on_the_row_the_session_runs", function()
   eq(press(picker_on(MEDIUM), { "<CR>" }), MEDIUM)
+end)
+
+-- The session still holds `adaptive`, but the row is gone, so the level it is
+-- sent as takes the cursor instead of the custom row.
+case("a_hidden_adaptive_opens_on_the_level_it_is_sent_as", function()
+  local state = Picker.new(model_with(ADAPTIVE, FIXED_LADDER, HIGH))
+  eq(state.rows[state.cursor].option.name, HIGH)
+end)
+
+-- Enter straight away keeps `adaptive`, so a session never stores the level
+-- without the user picking it. Once the cursor has moved, every row is a
+-- choice, the opened one included.
+case("confirming_the_opened_row_keeps_a_hidden_adaptive", function()
+  local function hidden()
+    return Picker.new(model_with(ADAPTIVE, FIXED_LADDER, HIGH))
+  end
+  eq(press(hidden(), { "<CR>" }), ADAPTIVE)
+  eq(press(hidden(), { "<Up>", "<CR>" }), MEDIUM)
+  eq(press(hidden(), { "<Up>", "<Down>", "<CR>" }), HIGH)
+  local clicked = hidden()
+  Picker.click(clicked, clicked.cursor)
+  eq(Picker.value(clicked), ADAPTIVE, "a click on the opened row is not a move")
 end)
 
 -- The one fallback: a value no row names is a raw token budget.
@@ -235,7 +269,7 @@ local function run(events, opts)
       if opts.reject then
         return nil, REJECTED
       end
-      return { thinking = args.thinking }
+      return { thinking = args.thinking, thinking_shown = opts.shown or args.thinking }
     end,
   }
   maki.ui = {
@@ -311,6 +345,12 @@ case("the_direct_form_skips_the_picker", function()
   eq(result.sets, "high")
   eq(result.flashes, "Thinking: high")
   eq(result.closed, false, "nothing was opened")
+end)
+
+case("the_flash_names_the_level_a_hidden_adaptive_is_sent_as", function()
+  local result = run({}, { direct = ADAPTIVE, shown = HIGH })
+  eq(result.sets, ADAPTIVE)
+  eq(result.flashes, "Thinking: " .. HIGH)
 end)
 
 case("a_model_without_thinking_gets_the_flash_instead_of_a_picker", function()

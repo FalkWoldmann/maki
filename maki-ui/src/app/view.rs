@@ -341,8 +341,10 @@ impl App {
     fn render_status_bar(&mut self, frame: &mut Frame, status_area: Rect, render_chat: usize) {
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
+        // Only the session's model is at hand here, and a subagent may run on
+        // another, so a subagent's options are shown as stored.
         let opts = chat.opts.unwrap_or(RequestOptions {
-            thinking: self.state.thinking,
+            thinking: self.state.thinking.shown(&self.state.model),
             fast: self.state.fast,
         });
         let (mode_label, mode_style) = self.mode_label();

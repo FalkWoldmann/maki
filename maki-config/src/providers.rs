@@ -29,8 +29,9 @@ type FileStamp = (PathBuf, Option<SystemTime>, u64);
 /// The parse of `providers.toml`, kept until the file changes.
 /// [`ProvidersConfig::load`] runs on nearly every model resolution, and once
 /// per row while the model picker builds its list, so without this each of
-/// those costs a read plus a full TOML parse.
-static PARSED: Mutex<Option<(FileStamp, ProvidersConfig)>> = Mutex::new(None);
+/// those costs a read plus a full TOML parse. A broken file is kept too, so a
+/// caller that polls it parses and reports it once per edit.
+static PARSED: Mutex<Option<(FileStamp, Result<ProvidersConfig, String>)>> = Mutex::new(None);
 
 /// Valid `top_p` is in the open interval exclusive of 0, up to 1 inclusive.
 const TOP_P_MIN: f64 = 0.0;
@@ -377,10 +378,7 @@ impl ProvidersConfig {
     /// Same read, but a typo only costs the answer. For callers past startup,
     /// where taking the process down mid-session is never the right trade.
     pub fn load_or_default() -> Self {
-        Self::read().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "ignoring providers.toml");
-            Self::default()
-        })
+        Self::read().unwrap_or_default()
     }
 
     fn read() -> Result<Self, String> {
@@ -395,10 +393,10 @@ impl ProvidersConfig {
         };
         let stamp = (path, meta.modified().ok(), meta.len());
         let mut parsed = PARSED.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((cached, config)) = parsed.as_ref()
+        if let Some((cached, result)) = parsed.as_ref()
             && *cached == stamp
         {
-            return Ok(config.clone());
+            return result.clone();
         }
         let content = match fs::read_to_string(&stamp.0) {
             Ok(c) => c,
@@ -407,12 +405,13 @@ impl ProvidersConfig {
                 return Ok(Self::default());
             }
         };
-        let config = toml::from_str::<ProvidersConfig>(&content)
-            .map_err(|e| format!("invalid {}: {e}", stamp.0.display()))?;
-        config.validate()?;
-        debug!(path = %stamp.0.display(), "loaded providers config");
-        *parsed = Some((stamp, config.clone()));
-        Ok(config)
+        let result = toml::from_str::<ProvidersConfig>(&content)
+            .map_err(|e| format!("invalid {}: {e}", stamp.0.display()))
+            .and_then(|config| config.validate().map(|()| config))
+            .inspect(|_| debug!(path = %stamp.0.display(), "loaded providers config"))
+            .inspect_err(|e| tracing::warn!(error = %e, "cannot use providers.toml"));
+        *parsed = Some((stamp, result.clone()));
+        result
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {

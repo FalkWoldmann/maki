@@ -20,7 +20,10 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelInfo};
 use crate::pricing::PricingSchedule;
 use crate::provider::{BoxFuture, Provider};
 use crate::spec::{BASES, ProviderRegistry, ProviderSpec};
-use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
+use crate::{
+    AgentError, Effort, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse,
+    model_registry,
+};
 
 use super::catalog;
 use super::codec::{self, BodyHook, CodecOptions, RequestCtx};
@@ -1459,6 +1462,15 @@ pub fn effective_authority(slug: &str) -> Option<String> {
     ))
 }
 
+/// What a codec declaration sends for `adaptive`. One that names no
+/// `openai.thinking` dialect leaves the mode to the model's own fields, which
+/// send nothing for a mode they do not spell.
+fn declared_adaptive_effort(model: &Model) -> Option<Effort> {
+    let entry = entry(&model.provider)?;
+    let wire = entry.decl.openai.as_ref()?.thinking.as_ref()?;
+    wire.adaptive_effort(model_registry::discovered(&model.provider, &model.id).as_ref())
+}
+
 pub fn spec(slug: &str) -> Option<&'static ProviderSpec> {
     Some(entry(slug)?.built.spec)
 }
@@ -2482,6 +2494,36 @@ mod tests {
             ),
             expected
         );
+    }
+
+    /// A codec sends `adaptive` the way its declared dialect spells it, and
+    /// without a dialect it leaves the mode to fields the model does not have.
+    #[test_case(Some("high-only"), Some(Effort::High) ; "dialect_with_a_fixed_level")]
+    #[test_case(Some("deepseek"), None ; "dialect_that_leaves_it_to_the_api")]
+    #[test_case(None, None ; "no_dialect")]
+    fn a_codec_declaration_sends_adaptive_as_its_dialect(
+        dialect: Option<&str>,
+        expected: Option<Effort>,
+    ) {
+        let slug = format!("adaptive-codec-{}", dialect.unwrap_or("plain"));
+        let mut reg = registration(&slug);
+        reg.decl.openai = dialect.map(|name| {
+            serde_json::from_value(serde_json::json!({ "thinking": { "dialect": name } })).unwrap()
+        });
+        register_loaded(reg).unwrap();
+
+        let model = Model::from_spec(&format!("{slug}/{MODEL_ID}")).unwrap();
+        assert_eq!(model.adaptive_effort(), expected);
+    }
+
+    #[test_case("zai", Some(Effort::High) ; "base_with_a_fixed_level")]
+    #[test_case(BUILTIN_SLUG, None ; "base_with_an_adaptive_mode")]
+    fn a_based_declaration_sends_adaptive_as_its_base(base: &str, expected: Option<Effort>) {
+        let slug = format!("adaptive-based-on-{base}");
+        register_loaded(based(&slug, base)).unwrap();
+
+        let model = Model::from_spec(&format!("{slug}/{MODEL_ID}")).unwrap();
+        assert_eq!(model.adaptive_effort(), expected);
     }
 
     /// A plugin's `list_models` knows its own catalogue, so the tier it

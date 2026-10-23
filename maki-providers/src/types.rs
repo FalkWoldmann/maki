@@ -640,6 +640,13 @@ pub struct EffortDialect<'a> {
     pub off: Option<&'static str>,
 }
 
+impl EffortDialect<'_> {
+    /// The level `Adaptive` goes out as, `None` where nothing is sent.
+    pub fn adaptive_effort(&self) -> Option<Effort> {
+        self.adaptive.map(|level| level.snap(self.supported))
+    }
+}
+
 /// The model's own spelling of each thinking mode, parsed and validated by
 /// maki-config. Turning one into wire bytes is this crate's job, see
 /// [`declared_fragment`].
@@ -657,6 +664,22 @@ pub enum ThinkingFallback {
     Dialect(&'static EffortDialect<'static>),
     /// llama.cpp's token budget field.
     BudgetField,
+}
+
+impl ThinkingFallback {
+    /// The level [`ThinkingConfig::apply_thinking`] sends for `Adaptive` on
+    /// `model`. `None` where the model spells the mode itself, or where the
+    /// endpoint is left to decide.
+    pub(crate) fn adaptive_effort(self, model: &Model) -> Option<Effort> {
+        let spelled = model
+            .thinking_fields
+            .as_ref()
+            .is_some_and(|fields| fields.adaptive.is_some());
+        match self {
+            Self::Dialect(dialect) if !spelled => dialect.adaptive_effort(),
+            Self::None | Self::Dialect(_) | Self::BudgetField => None,
+        }
+    }
 }
 
 /// The fragment that spells `thinking` for this model, if it has one. Effort
@@ -1098,6 +1121,17 @@ impl ThinkingConfig {
         }
         if model.requires_thinking() && !self.is_enabled() {
             return Self::Effort(Effort::Minimal);
+        }
+        self
+    }
+
+    /// What the picker and the status bar call this config: `Adaptive` reads
+    /// as the level the provider sends for it where the API has no adaptive
+    /// mode. Display only. The session keeps `Adaptive`, which sets a
+    /// subagent no ceiling ([`Self::clamp_to`]) where a level would.
+    pub fn shown(self, model: &Model) -> Self {
+        if self == Self::Adaptive {
+            return model.adaptive_effort().map_or(self, Self::Effort);
         }
         self
     }
@@ -2061,6 +2095,35 @@ mod tests {
             fast: false,
         };
         assert_eq!(opts.clamped(&model).thinking, expected);
+    }
+
+    /// The picker and the status bar read the level, but the session keeps
+    /// `Adaptive`: a stored level would cap subagents where `Adaptive` does not.
+    #[test_case(ThinkingConfig::Adaptive,    ThinkingConfig::Effort(High) ; "adaptive_reads_as_the_fixed_level")]
+    #[test_case(ThinkingConfig::Effort(Low), ThinkingConfig::Effort(Low)  ; "a_named_level_stays")]
+    #[test_case(ThinkingConfig::Off,         ThinkingConfig::Off          ; "off_stays")]
+    fn shown_resolves_adaptive_without_changing_what_is_stored(
+        thinking: ThinkingConfig,
+        expected: ThinkingConfig,
+    ) {
+        let mut model = clamp_test_model(crate::spec::ProviderRegistry::get("xai").unwrap());
+        model.thinking_override = Some(Support::Yes);
+
+        assert_eq!(thinking.shown(&model), expected);
+        assert_eq!(thinking.clamped(&model), thinking);
+    }
+
+    /// A model that spells `adaptive` itself keeps the mode, whatever the
+    /// provider's dialect would have sent.
+    #[test_case(json!({"high": {"reasoning_effort": "xhigh"}}), Some(Effort::Medium) ; "unspelled_takes_the_dialect_level")]
+    #[test_case(json!({"adaptive": {"reasoning_effort": "auto"}}), None ; "spelled_stays_adaptive")]
+    fn fallback_adaptive_effort_defers_to_the_models_own_fields(
+        fields: Value,
+        expected: Option<Effort>,
+    ) {
+        let model = native_thinking_model("partial", fields);
+        assert_eq!(DIALECT.adaptive_effort(&model), expected);
+        assert_eq!(ThinkingFallback::None.adaptive_effort(&model), None);
     }
 
     #[test_case(None,                           ThinkingConfig::Off      ; "absent_means_off")]

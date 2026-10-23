@@ -41,6 +41,14 @@ pub fn base_spec(slug: &str) -> Option<&'static ProviderSpec> {
     Some(protocol_spec(config.get(slug)?.protocol?))
 }
 
+/// Whether [`base_spec`] answers for `slug`, for a caller past startup: a
+/// broken `providers.toml` reads as no entry instead of exiting.
+pub(crate) fn is_declared(slug: &str) -> bool {
+    ProvidersConfig::load_or_default()
+        .get(slug)
+        .is_some_and(|def| def.protocol.is_some())
+}
+
 /// The credentials and the env var they came out of, which the codec carries
 /// as part of this provider's wire config.
 fn resolve_custom_auth(slug: &str) -> Result<(ResolvedAuth, String), AgentError> {
