@@ -517,6 +517,8 @@ mod tests {
     const GRPC: &str = "grpc";
     const HTTP_PROTOBUF: &str = "http/protobuf";
     const ENDPOINT: &str = "http://collector:4318";
+    /// Read by maki and by the OpenTelemetry SDK.
+    const ENV_PREFIXES: [&str; 2] = ["OTEL_", "MAKI_"];
 
     fn lua(protocol: &str) -> TelemetryConfig {
         TelemetryConfig {
@@ -632,6 +634,7 @@ mod tests {
 
     #[test]
     fn rejects_a_zero_logs_interval() {
+        isolate_env();
         let config = TelemetryConfig {
             logs_interval_ms: Some(0),
             ..TelemetryConfig::default()
@@ -656,6 +659,20 @@ mod tests {
         ));
     }
 
+    /// The SDK and `batch_config` read the developer's shell, so its
+    /// telemetry variables go first. Sound because nextest runs each test in
+    /// its own process, before any other thread starts.
+    fn isolate_env() {
+        for (key, _) in env::vars_os() {
+            if key
+                .to_str()
+                .is_some_and(|key| ENV_PREFIXES.iter().any(|prefix| key.starts_with(prefix)))
+            {
+                unsafe { env::remove_var(key) };
+            }
+        }
+    }
+
     /// gRPC panics at build time without a tokio runtime, and only a live
     /// collector would notice otherwise.
     #[test_case(OTLP, GRPC, "http://127.0.0.1:9"; "grpc")]
@@ -664,6 +681,7 @@ mod tests {
     #[test_case(OTLP, HTTP_PROTOBUF, "https://127.0.0.1:9"; "http_tls")]
     #[test_case(CONSOLE, GRPC, ""; "console")]
     fn providers_build_for_every_exporter(exporter: &str, protocol: &str, endpoint: &str) {
+        isolate_env();
         let config = TelemetryConfig {
             enabled: Some(true),
             metrics_exporter: Some(exporter.to_string()),
