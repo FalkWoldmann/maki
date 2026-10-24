@@ -133,9 +133,8 @@ Exporter values are `otlp`, `console`, `none`, or a comma-separated mix, and a
 repeat is ignored. Protocols are `grpc`, `http/protobuf` and `http/json`.
 Per-signal keys like `metrics_endpoint` or `metrics_headers` replace the
 generic one, as the per-signal variables do. Durations are in milliseconds.
-Keep `logs_interval_ms`, `OTEL_BLRP_SCHEDULE_DELAY` and
-`OTEL_METRIC_EXPORT_INTERVAL` above zero, because at zero the SDK's export
-threads spin for the whole session. The SDK ignores `metrics_interval_ms = 0`. The SDK allocates the event queue up front, so
+Intervals must be above zero, because at zero the SDK's export threads would
+spin for the whole session. The SDK allocates the event queue up front, so
 `logs_max_queue_size` and `OTEL_BLRP_MAX_QUEUE_SIZE` accept at most 65536.
 `compression = "none"` leaves compression to `OTEL_EXPORTER_OTLP_COMPRESSION`,
 which is off by default.

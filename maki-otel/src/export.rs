@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::str::FromStr;
 use std::time::Duration;
 
 use async_compat::Compat;
@@ -24,10 +25,12 @@ use opentelemetry_otlp::{
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::{
     BatchConfig, BatchConfigBuilder, BatchLogProcessor, LogExporter as SdkLogExporter,
-    OTEL_BLRP_MAX_QUEUE_SIZE, SdkLoggerProvider,
+    OTEL_BLRP_MAX_QUEUE_SIZE, OTEL_BLRP_SCHEDULE_DELAY, SdkLoggerProvider,
 };
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
+use opentelemetry_sdk::metrics::{
+    OTEL_METRIC_EXPORT_INTERVAL, PeriodicReader, SdkMeterProvider, Temporality,
+};
 
 use crate::InitError;
 use crate::console::{ConsoleLogs, ConsoleMetrics};
@@ -45,6 +48,8 @@ const LUA_LOGS_PROTOCOL: &str = "telemetry.logs_protocol";
 const LUA_COMPRESSION: &str = "telemetry.compression";
 const LUA_TEMPORALITY: &str = "telemetry.metrics_temporality";
 const LUA_LOGS_MAX_QUEUE_SIZE: &str = "telemetry.logs_max_queue_size";
+const LUA_METRICS_INTERVAL: &str = "telemetry.metrics_interval_ms";
+const LUA_LOGS_INTERVAL: &str = "telemetry.logs_interval_ms";
 const METRICS_PATH: &str = "/v1/metrics";
 const LOGS_PATH: &str = "/v1/logs";
 const PROTOCOLS: [&str; 3] = [
@@ -64,6 +69,7 @@ const EXPECTED_PROTOCOL: &str = "grpc, http/protobuf or http/json";
 const EXPECTED_COMPRESSION: &str = "gzip or none";
 const EXPECTED_TEMPORALITY: &str = "cumulative, delta or lowmemory";
 const EXPECTED_QUEUE_SIZE: &str = "at most 65536";
+const EXPECTED_INTERVAL: &str = "above 0";
 
 type Providers = (Option<SdkMeterProvider>, Option<SdkLoggerProvider>);
 
@@ -177,6 +183,11 @@ fn meter_provider(
     if exporters.is_empty() {
         return Ok(None);
     }
+    reject_zero_interval(
+        lua.metrics_interval_ms,
+        LUA_METRICS_INTERVAL,
+        OTEL_METRIC_EXPORT_INTERVAL,
+    )?;
     let temporality = lua
         .metrics_temporality
         .as_deref()
@@ -241,13 +252,11 @@ fn batch_processor<E: SdkLogExporter + 'static>(
 }
 
 fn batch_config(lua: &TelemetryConfig) -> Result<BatchConfig, InvalidSetting> {
-    let queue_size = lua
-        .logs_max_queue_size
-        .map(|size| (LUA_LOGS_MAX_QUEUE_SIZE, size))
-        .or_else(|| {
-            let size = env::var(OTEL_BLRP_MAX_QUEUE_SIZE).ok()?.parse().ok()?;
-            Some((OTEL_BLRP_MAX_QUEUE_SIZE, size))
-        });
+    let queue_size = lua_or_env(
+        lua.logs_max_queue_size,
+        LUA_LOGS_MAX_QUEUE_SIZE,
+        OTEL_BLRP_MAX_QUEUE_SIZE,
+    );
     if let Some((key, size)) = queue_size.filter(|&(_, size)| size > MAX_LOGS_QUEUE_SIZE) {
         return Err(InvalidSetting::new(
             key,
@@ -255,6 +264,11 @@ fn batch_config(lua: &TelemetryConfig) -> Result<BatchConfig, InvalidSetting> {
             EXPECTED_QUEUE_SIZE,
         ));
     }
+    reject_zero_interval(
+        lua.logs_interval_ms,
+        LUA_LOGS_INTERVAL,
+        OTEL_BLRP_SCHEDULE_DELAY,
+    )?;
     Ok(BatchConfigBuilder::default()
         .set(
             lua.logs_interval_ms.map(Duration::from_millis),
@@ -269,6 +283,31 @@ fn batch_config(lua: &TelemetryConfig) -> Result<BatchConfig, InvalidSetting> {
             BatchConfigBuilder::with_max_export_batch_size,
         )
         .build())
+}
+
+/// At zero the SDK's export thread never sleeps and pins a core.
+fn reject_zero_interval(
+    lua: Option<u64>,
+    lua_key: &'static str,
+    env_key: &'static str,
+) -> Result<(), InvalidSetting> {
+    match lua_or_env(lua, lua_key, env_key) {
+        Some((key, 0)) => Err(InvalidSetting::new(key, "0", EXPECTED_INTERVAL)),
+        _ => Ok(()),
+    }
+}
+
+/// The `init.lua` value, else the variable's when it parses, as the SDK
+/// picks them.
+fn lua_or_env<T: FromStr>(
+    lua: Option<T>,
+    lua_key: &'static str,
+    env_key: &'static str,
+) -> Option<(&'static str, T)> {
+    lua.map(|value| (lua_key, value)).or_else(|| {
+        let value = env::var(env_key).ok()?.parse().ok()?;
+        Some((env_key, value))
+    })
 }
 
 fn otlp_metrics(
@@ -589,6 +628,32 @@ mod tests {
                 EXPECTED_QUEUE_SIZE
             )
         );
+    }
+
+    #[test]
+    fn rejects_a_zero_logs_interval() {
+        let config = TelemetryConfig {
+            logs_interval_ms: Some(0),
+            ..TelemetryConfig::default()
+        };
+        assert_eq!(
+            batch_config(&config).err().unwrap(),
+            InvalidSetting::new(LUA_LOGS_INTERVAL, "0", EXPECTED_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn rejects_a_zero_metrics_interval() {
+        let config = TelemetryConfig {
+            metrics_interval_ms: Some(0),
+            ..TelemetryConfig::default()
+        };
+        let result = meter_provider(&[Exporter::Console], &config, Resource::builder().build());
+        assert!(matches!(
+            result,
+            Err(InitError::Settings(err))
+                if err == InvalidSetting::new(LUA_METRICS_INTERVAL, "0", EXPECTED_INTERVAL)
+        ));
     }
 
     /// gRPC panics at build time without a tokio runtime, and only a live
