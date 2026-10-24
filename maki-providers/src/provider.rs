@@ -15,7 +15,7 @@ use crate::providers::catalog::{
     available_if_warm, catalog_providers, catalog_providers_if_available, try_create,
 };
 use crate::providers::{KeyRotation, Timeouts, custom, plugin};
-use crate::spec::{Owner, ProviderRegistry};
+use crate::spec::{Build, Owner, ProviderRegistry, ProviderSpec};
 use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -204,6 +204,34 @@ pub fn available_model_specs(policy: &ModelPolicy) -> Vec<String> {
     specs
 }
 
+/// A built-in that accepts arbitrary models lists exactly what this account
+/// may use, so its curated rows stay out: they can name models the org
+/// disabled or GitHub retired (#939). Curated providers and a plugin's
+/// declared rows are listed on top.
+pub(crate) fn listed_specs(spec: &ProviderSpec, listed: &[ModelInfo]) -> Vec<String> {
+    let mut specs: Vec<String> = listed
+        .iter()
+        .map(|model| format!("{}/{}", spec.slug, model.id))
+        .collect();
+    let listing_is_complete =
+        spec.accepts_arbitrary_models && !matches!(spec.build, Build::Declared(_));
+    if !listing_is_complete {
+        for static_spec in static_specs(spec) {
+            if !specs.contains(&static_spec) {
+                specs.push(static_spec);
+            }
+        }
+    }
+    specs
+}
+
+fn static_specs(spec: &ProviderSpec) -> impl Iterator<Item = String> {
+    spec.models()
+        .iter()
+        .flat_map(|entry| entry.prefixes.iter())
+        .map(|prefix| format!("{}/{prefix}", spec.slug))
+}
+
 pub async fn fetch_all_models(
     policy: &ModelPolicy,
     mut on_ready: impl FnMut(ModelBatch),
@@ -223,17 +251,8 @@ pub async fn fetch_all_models(
         smol::spawn(async move {
             let batch = match provider.list_models().await {
                 Ok(models) => {
-                    let mut specs: Vec<String> =
-                        models.iter().map(|m| format!("{slug}/{}", m.id)).collect();
+                    let specs = listed_specs(spec, &models);
                     set_known_models(slug, models);
-                    for entry in spec.models() {
-                        for prefix in &entry.prefixes {
-                            let spec = format!("{slug}/{prefix}");
-                            if !specs.contains(&spec) {
-                                specs.push(spec);
-                            }
-                        }
-                    }
                     ModelBatch {
                         models: specs,
                         warnings: Vec::new(),
@@ -241,14 +260,8 @@ pub async fn fetch_all_models(
                 }
                 Err(e) => {
                     warn!(provider = slug, error = %e, "failed to list models, using static fallback");
-                    let fallback: Vec<String> = spec
-                        .models()
-                        .iter()
-                        .flat_map(|entry| entry.prefixes.iter())
-                        .map(|p| format!("{slug}/{p}"))
-                        .collect();
                     ModelBatch {
-                        models: fallback,
+                        models: static_specs(spec).collect(),
                         warnings: vec![format!(
                             "{display_name}: {e} (using static fallback)"
                         )],
@@ -322,7 +335,11 @@ pub async fn fetch_all_models(
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
+
+    const LIVE_ONLY_MODEL: &str = "live-only-model";
 
     fn policy(allowed: &[&str], excluded: &[&str]) -> ModelPolicy {
         ModelPolicy::new(
@@ -349,6 +366,26 @@ mod tests {
         assert!(!specs.is_empty());
         assert!(specs.iter().all(|spec| spec.starts_with("openai/")));
         assert!(!specs.iter().any(|spec| spec == "openai/gpt-5.6-terra"));
+    }
+
+    #[test_case("copilot", false ; "discovered_provider_lists_only_live_models")]
+    #[test_case("anthropic", true ; "curated_provider_keeps_static_rows")]
+    fn listed_specs_static_rows(slug: &str, keeps_static_rows: bool) {
+        let spec = ProviderRegistry::get(slug).unwrap();
+        let static_rows: Vec<String> = static_specs(spec).collect();
+        assert!(!static_rows.is_empty());
+        let listed = [ModelInfo {
+            id: LIVE_ONLY_MODEL.into(),
+            ..Default::default()
+        }];
+
+        let specs = listed_specs(spec, &listed);
+
+        let mut expected = vec![format!("{slug}/{LIVE_ONLY_MODEL}")];
+        if keeps_static_rows {
+            expected.extend(static_rows);
+        }
+        assert_eq!(specs, expected);
     }
 
     #[test]

@@ -1582,6 +1582,7 @@ mod tests {
     use super::*;
     use crate::model::ModelTier;
     use crate::model_registry;
+    use crate::provider::listed_specs;
     use crate::retry::RetryKind;
     use crate::test_support::{Canned, serve};
     use crate::types::dialect;
@@ -2460,6 +2461,22 @@ mod tests {
         assert_eq!(
             login.default_model,
             Some(format!("{SLUG}/{MODEL_ID}").as_str())
+        );
+    }
+
+    #[test]
+    fn live_listing_keeps_declared_rows() {
+        const SLUG: &str = "listed-plugin";
+        register_loaded(registration(SLUG)).unwrap();
+        let row = spec(SLUG).unwrap();
+        assert!(row.accepts_arbitrary_models);
+
+        assert_eq!(
+            listed_specs(row, &[]),
+            [
+                format!("{SLUG}/{MODEL_ID}"),
+                format!("{SLUG}/{MODEL_ALIAS}")
+            ]
         );
     }
 
