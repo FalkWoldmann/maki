@@ -1,3 +1,4 @@
+--!strict
 -- Corner toast notifications built on floating windows. `maki.ui.flash` gives
 -- you one line in the status area. A toast stays up long enough to read, can
 -- carry a title, and stacks under the toasts already on screen.
@@ -12,11 +13,13 @@ local DEFAULT_TIMEOUT_SECS = 4
 -- toast doesn't bury it and callers don't have to time their notices.
 local ZINDEX = 200
 
+type Opts = { title: string?, timeout_secs: number? }
+
 -- Show {text} as a toast, up to 5 lines of it. {opts}: title (string),
 -- timeout_secs (integer, default 4). Returns right away and the toast
 -- dismisses itself when the time is up.
-function Toast.show(text, opts)
-  opts = opts or {}
+function Toast.show(text: unknown, opts: Opts?)
+  local options: Opts = opts or {}
   local lines = {}
   local width = MIN_WIDTH
   for line in tostring(text):gmatch("[^\n]+") do
@@ -35,7 +38,7 @@ function Toast.show(text, opts)
   local buf = maki.ui.buf({ scratch = true })
   buf:set_lines(lines)
   local win = maki.ui.open_win(buf, {
-    title = opts.title,
+    title = options.title,
     anchor = "NE",
     stack = true,
     col = 0,
@@ -47,7 +50,7 @@ function Toast.show(text, opts)
 
   -- defer_fn and not async.sleep: the toast outlives the tool call that
   -- raised it, so the timer must not hang off that call's cancel token.
-  local timeout_secs = math.max(0, tonumber(opts.timeout_secs) or DEFAULT_TIMEOUT_SECS)
+  local timeout_secs = math.max(0, tonumber(options.timeout_secs) or DEFAULT_TIMEOUT_SECS)
   maki.defer_fn(function()
     win:close()
   end, math.floor(timeout_secs * 1000))

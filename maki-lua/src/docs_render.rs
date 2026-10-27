@@ -389,6 +389,11 @@ fn is_public_fn(line: &str) -> bool {
         .is_some_and(|c| c != '_')
 }
 
+/// A one-line `type` alias. Signatures name it, so the skeleton keeps it.
+fn is_type_alias(line: &str) -> bool {
+    (line.starts_with("type ") || line.starts_with("export type ")) && !line.ends_with('{')
+}
+
 fn is_export(line: &str) -> bool {
     let Some((lhs, rhs)) = line.split_once(" = ") else {
         return false;
@@ -426,7 +431,7 @@ fn skeleton(src: &str) -> String {
             flush(&mut out, &mut pending);
             leading = false;
         }
-        if is_public_fn(line) || is_export(line) {
+        if is_public_fn(line) || is_export(line) || is_type_alias(line) {
             if !pending.is_empty() && !out.is_empty() {
                 out.push('\n');
             }
@@ -741,11 +746,11 @@ mod tests {
 
     const AGENT_VOICE: &str = "ask the user";
 
-    const MODULE: &str = "-- Header line one.\n-- Header line two.\nlocal M = {}\nM.__index = M\nM.CONST = \"x\"\nM.specs = {\n  a = 1,\n}\nlocal function private()\nend\n-- Doc for pub.\nfunction M.pub(a, b)\n  local inner = 1\nend\nfunction M:_hidden()\nend\nfunction M:method()\nend\nreturn M\n";
+    const MODULE: &str = "-- Header line one.\n-- Header line two.\nlocal M = {}\nM.__index = M\nM.CONST = \"x\"\nM.specs = {\n  a = 1,\n}\ntype Opts = { a: string? }\ntype Big = {\n  a: number,\n}\nlocal function private()\nend\n-- Doc for pub.\nfunction M.pub(a, b)\n  local inner = 1\nend\nfunction M:_hidden()\nend\nfunction M:method()\nend\nreturn M\n";
 
     #[test]
     fn skeleton_keeps_public_surface_only() {
-        let expected = "-- Header line one.\n-- Header line two.\nM.CONST = \"x\"\n\n-- Doc for pub.\nfunction M.pub(a, b)\nfunction M:method()\n";
+        let expected = "-- Header line one.\n-- Header line two.\nM.CONST = \"x\"\ntype Opts = { a: string? }\n\n-- Doc for pub.\nfunction M.pub(a, b)\nfunction M:method()\n";
         assert_eq!(skeleton(MODULE), expected);
     }
 

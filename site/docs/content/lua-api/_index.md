@@ -8423,26 +8423,27 @@ shown as full source, larger ones as their public interface.
 ### `require("maki.color")`
 
 ```lua
+--!strict
 local M = {}
 
-function M.lerp(from, to, t)
+local function mix(from_hex: string?, to_hex: string?, t: number): number
+  local a, b = tonumber(from_hex, 16) :: number, tonumber(to_hex, 16) :: number
+  return math.floor(a + (b - a) * t + 0.5)
+end
+
+function M.lerp(from: string, to: string, t: number): string?
   local fr, fg, fb = from:match("^#(%x%x)(%x%x)(%x%x)$")
   local tr, tg, tb = to:match("^#(%x%x)(%x%x)(%x%x)$")
   if not fr or not tr then
     return nil
   end
-  fr, fg, fb = tonumber(fr, 16), tonumber(fg, 16), tonumber(fb, 16)
-  tr, tg, tb = tonumber(tr, 16), tonumber(tg, 16), tonumber(tb, 16)
-  local r = math.floor(fr + (tr - fr) * t + 0.5)
-  local g = math.floor(fg + (tg - fg) * t + 0.5)
-  local b = math.floor(fb + (tb - fb) * t + 0.5)
-  return string.format("#%02x%02x%02x", r, g, b)
+  return string.format("#%02x%02x%02x", mix(fr, tr, t), mix(fg, tg, t), mix(fb, tb, t))
 end
 
-function M.dim(color, factor)
+function M.dim(color: string, factor: number): string?
   local background = maki.ui.theme_style("background")
   local bg = background and background.bg
-  return bg and M.lerp(color, bg, factor)
+  return bg and M.lerp(color, bg, factor) or nil
 end
 
 return M
@@ -8521,28 +8522,30 @@ ListPicker.range_spans = range_spans
 ### `require("maki.output_limits")`
 
 ```lua
+--!strict
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
 M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
-function M.extend(spec)
+function M.extend(spec: { [string]: any }): { [string]: any }
 
 --- Returns max_lines, max_bytes: tool override when set, agent-wide otherwise.
 --- Both nil in full mode.
-function M.resolve(opts, ctx)
+function M.resolve(opts: any, ctx: any): (number?, number?)
 
 --- opts.max_line_bytes, or 0 (no limit) in full mode.
-function M.line_bytes(opts, ctx)
+function M.line_bytes(opts: any, ctx: any): number
 
 --- Cuts {text} to the limits keeping its head and its tail, since on a long
 --- build or test run the errors and the summary sit at the end. Each end gets
 --- half of every limit. A nil limit is unlimited. The marker between the two
 --- notes how many lines and bytes it dropped.
-function M.cut_middle(text, max_lines, max_bytes)
+function M.cut_middle(text: string, max_lines: number?, max_bytes: number?): string
 ```
 
 ### `require("maki.partial")`
 
 ```lua
+--!strict
 -- When a tool is cut short, it still hands back what it printed. The marker
 -- tells the model that output is real but unfinished. One home for the
 -- wording and the painting, so every tool says it the same way.
@@ -8551,47 +8554,50 @@ function M.cut_middle(text, max_lines, max_bytes)
 --- the tool streamed, already truncated; empty means the view still shows a
 --- placeholder to drop. {reason} is a cancel-hook reason ("cancelled" |
 --- "timeout"). {started_at} is the `os.time()` the tool began at.
-function M.cut(view, out, reason, timeout_secs, started_at)
+function M.cut(view: any, out: string, reason: string, timeout_secs: number, started_at: number)
 ```
 
 ### `require("maki.provider_parse")`
 
 ```lua
+--!strict
 -- Typed readers for provider model-list and usage JSON, for use in
 -- `list_models` and `fetch_usage` hooks.
 --
 -- `8192` and `8192.0` both count as whole numbers. A JSON null decodes to nil,
 -- and in an array it stops `ipairs`. Numbers above 2^53 come back rounded.
+type Pricing = { input: number, output: number, cache_write: number, cache_read: number }
 
 --- A whole, non-negative number up to 2^64, or nil.
-function M.as_u64(value)
+function M.as_u64(value: unknown): number?
 
 --- A whole, non-negative number that fits a u32, or nil.
-function M.as_u32(value)
+function M.as_u32(value: unknown): number?
 
 --- A number, or nil.
-function M.as_f64(value)
+function M.as_f64(value: unknown): number?
 
 --- A boolean, or nil.
-function M.as_bool(value)
+function M.as_bool(value: unknown): boolean?
 
 --- A model row's `pricing`, converted from per-token to per-million-token
 --- dollars. Nil unless both `input` and `output` are given, so a partial price
 --- never reads as free. A missing cache price is 0.
-function M.pricing(input, output, cache_write, cache_read)
+function M.pricing(input: number?, output: number?, cache_write: number?, cache_read: number?): Pricing?
 
 --- Maps each `body.data` element through `parse_row`, drops nils, keeps the
 --- first row per id, and sorts by id. Returns an empty list when `data` is
 --- not an array.
-function M.models(body, parse_row)
+function M.models(body: any, parse_row: (any) -> any): { any }
 ```
 
 ### `require("maki.scroll")`
 
 ```lua
+--!strict
 -- Relative scrolling on top of maki.fn.winsaveview / winrestview.
 -- Positive {delta} scrolls down, negative up. Returns (true, nil) or (nil, err).
-local function scroll(delta)
+local function scroll(delta: number): (boolean?, string?)
   local view, err = maki.fn.winsaveview()
   if not view then
     return nil, err
@@ -8605,11 +8611,12 @@ return scroll
 ### `require("maki.shorten_path")`
 
 ```lua
-local function normalize_sep(s)
-  return s:gsub("\\", "/")
+--!strict
+local function normalize_sep(s: string): string
+  return (s:gsub("\\", "/"))
 end
 
-local function shorten_path(path)
+local function shorten_path(path: string): string
   local p = normalize_sep(path)
   local cwd = maki.uv.cwd()
   if cwd then
@@ -8636,16 +8643,17 @@ return shorten_path
 ### `require("maki.test_helpers")`
 
 ```lua
+--!strict
 -- Shared test helpers for Lua plugin specs.
 --
 -- Provides a lightweight test harness: `case` wraps each block in pcall so a
 -- single failure does not abort the rest of the suite. Failures are collected
 -- and surfaced by `report()` at the end.
-function M.case(name, fn)
-function M.eq(actual, expected, msg)
-function M.has(s, substr, msg)
-function M.mktmpdir(prefix)
-function M.rmtree(dir)
+function M.case(name: string, fn: () -> ())
+function M.eq(actual: unknown, expected: unknown, msg: string?)
+function M.has(s: string, substr: string, msg: string?)
+function M.mktmpdir(prefix: string?): string
+function M.rmtree(dir: string)
 function M.report()
 ```
 
@@ -8714,14 +8722,16 @@ function TextInput:render(prefix, prefix_width, width)
 ### `require("maki.toast")`
 
 ```lua
+--!strict
 -- Corner toast notifications built on floating windows. `maki.ui.flash` gives
 -- you one line in the status area. A toast stays up long enough to read, can
 -- carry a title, and stacks under the toasts already on screen.
+type Opts = { title: string?, timeout_secs: number? }
 
 -- Show {text} as a toast, up to 5 lines of it. {opts}: title (string),
 -- timeout_secs (integer, default 4). Returns right away and the toast
 -- dismisses itself when the time is up.
-function Toast.show(text, opts)
+function Toast.show(text: unknown, opts: Opts?)
 ```
 
 ### `require("maki.tool_view")`
@@ -8781,6 +8791,7 @@ function ToolView.restore_markdown(output, is_error, opts)
 ### `require("maki.truncate")`
 
 ```lua
+--!strict
 --- require("maki.truncate")(text, max_lines, max_bytes)
 --- Cuts {text} to the limits and notes how many bytes it dropped. A nil limit
 --- is unlimited.

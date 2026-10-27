@@ -1,3 +1,4 @@
+--!strict
 -- Shared per-tool output limit options, so the tools that support them
 -- cannot drift apart.
 
@@ -12,9 +13,9 @@ M.DEFAULT_MAX_LINE_BYTES = DEFAULT_MAX_LINE_BYTES
 M.specs = {
   max_output_lines = { type = "integer", desc = "Override `agent.max_output_lines` for this tool." },
   max_output_bytes = { type = "integer", desc = "Override `agent.max_output_bytes` for this tool." },
-}
+} :: { [string]: any }
 
-function M.extend(spec)
+function M.extend(spec: { [string]: any }): { [string]: any }
   for name, s in pairs(M.specs) do
     spec[name] = s
   end
@@ -23,7 +24,7 @@ end
 
 --- Returns max_lines, max_bytes: tool override when set, agent-wide otherwise.
 --- Both nil in full mode.
-function M.resolve(opts, ctx)
+function M.resolve(opts: any, ctx: any): (number?, number?)
   if ctx:output_mode() == "full" then
     return nil, nil
   end
@@ -32,11 +33,11 @@ function M.resolve(opts, ctx)
 end
 
 --- opts.max_line_bytes, or 0 (no limit) in full mode.
-function M.line_bytes(opts, ctx)
+function M.line_bytes(opts: any, ctx: any): number
   return ctx:output_mode() == "full" and 0 or opts.max_line_bytes
 end
 
-local function split_lines(text)
+local function split_lines(text: string): { string }
   local lines, pos = {}, 1
   while true do
     local newline = text:find("\n", pos, true)
@@ -49,7 +50,7 @@ local function split_lines(text)
   end
 end
 
-local function utf8_prefix(line, max_bytes)
+local function utf8_prefix(line: string, max_bytes: number): string
   local cut = max_bytes
   while cut > 0 and line:find(UTF8_CONTINUATION, cut + 1) do
     cut = cut - 1
@@ -61,7 +62,7 @@ end
 --- build or test run the errors and the summary sit at the end. Each end gets
 --- half of every limit. A nil limit is unlimited. The marker between the two
 --- notes how many lines and bytes it dropped.
-function M.cut_middle(text, max_lines, max_bytes)
+function M.cut_middle(text: string, max_lines: number?, max_bytes: number?): string
   if not max_lines and not max_bytes then
     return text
   end
