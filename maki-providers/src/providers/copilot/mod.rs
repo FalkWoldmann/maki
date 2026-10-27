@@ -443,10 +443,15 @@ impl CopilotModel {
 
     fn model_info(&self) -> ModelInfo {
         let reasoning = self.reasoning_info();
+        let limits = &self.capabilities.limits;
         ModelInfo {
             id: self.id.clone(),
-            context_window: self.capabilities.limits.max_context_window_tokens,
-            max_output_tokens: self.capabilities.limits.max_output_tokens,
+            // `max_context_window_tokens` is prompt plus output; the prompt
+            // alone is held to `max_prompt_tokens`.
+            context_window: limits
+                .max_prompt_tokens
+                .or(limits.max_context_window_tokens),
+            max_output_tokens: limits.max_output_tokens,
             pricing: self.pricing(),
             supports_thinking: Some(self.supports_thinking()),
             supports_vision: Some(self.capabilities.supports.vision),
@@ -576,6 +581,7 @@ struct CopilotModelCapabilities {
 #[derive(Clone, Default, Deserialize)]
 struct CopilotModelLimits {
     max_context_window_tokens: Option<u32>,
+    max_prompt_tokens: Option<u32>,
     max_output_tokens: Option<u32>,
 }
 
@@ -952,6 +958,17 @@ mod tests {
         );
         assert!(provider_info.reasoning_off);
         assert!(provider_info.adaptive_thinking);
+    }
+
+    #[test_case(json!({"max_context_window_tokens": 328_000, "max_prompt_tokens": 200_000}) => Some(200_000) ; "prompt_cap")]
+    #[test_case(json!({"max_context_window_tokens": 328_000}) => Some(328_000) ; "no_prompt_cap")]
+    fn context_window_from_limits(limits: Value) -> Option<u32> {
+        let model: CopilotModel = serde_json::from_value(json!({
+            "id": "claude-opus-5.5",
+            "capabilities": {"type": "chat", "limits": limits}
+        }))
+        .unwrap();
+        model.model_info().context_window
     }
 
     #[test]
