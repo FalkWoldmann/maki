@@ -484,7 +484,7 @@ fn slug(text: &str) -> String {
     out.trim_end_matches('-').to_owned()
 }
 
-fn instance_name(module: &ModuleDoc) -> &'static str {
+pub fn instance_name(module: &ModuleDoc) -> &'static str {
     module.name.rsplit('.').next().unwrap_or(module.name)
 }
 

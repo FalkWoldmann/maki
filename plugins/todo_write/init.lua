@@ -50,8 +50,9 @@ local function ensure_win()
   if buf and win and win:is_open() then
     return
   end
-  buf = maki.ui.buf()
-  win = maki.ui.open_win(buf, {
+  local new_buf = maki.ui.buf()
+  buf = new_buf
+  win = maki.ui.open_win(new_buf, {
     split = "panel",
     height = 4,
     order = 10,

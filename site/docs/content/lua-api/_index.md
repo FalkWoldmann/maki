@@ -6261,7 +6261,7 @@ With {include_bytes} set to true: `start_row, start_col, start_byte, end_row, en
 
 - `{include_bytes?}` (`boolean`) When true, byte offsets are included in the return values.
 
-**Returns:** (`integer`, `integer`, `integer`, `integer`) Four values, or six when include_bytes is true.
+**Returns:** (`integer`, `integer`, `integer`, `integer`, `integer?`, `integer?`) Four values, or six when include_bytes is true.
 
 **Example:**
 

@@ -104,7 +104,7 @@ fn id(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
 /// With {include_bytes} set to true: `start_row, start_col, start_byte, end_row, end_col, end_byte`.
 ///
 /// @param include_bytes boolean When true, byte offsets are included in the return values.
-/// @return (integer, integer, integer, integer) Four values, or six when include_bytes is true.
+/// @return (integer, integer, integer, integer, integer?, integer?) Four values, or six when include_bytes is true.
 /// @example
 /// local sr, sc, er, ec = node:range()
 /// local sr, sc, sb, er, ec, eb = node:range(true)
