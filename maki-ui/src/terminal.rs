@@ -1,7 +1,9 @@
 use shell_words::split;
 use std::io::{Write, stdout};
+use std::panic;
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use color_eyre::Result;
@@ -18,6 +20,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_config::NotificationMethod;
 
 const FALLBACK_NOTIFICATION_MESSAGE: &str = "Maki needs attention";
+const UNKNOWN_PANIC_PAYLOAD: &str = "unknown panic payload";
 const NOTIFICATION_TITLE: &str = "Maki";
 const BELL_SEQUENCE: &str = "\u{7}";
 /// XTPUSHTITLE saves whatever title the shell left on the window, so the
@@ -296,6 +299,7 @@ impl TerminalMux {
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
         let terminal = ratatui::init();
+        restore_only_on_ui_panics();
         write_mux_sequence(PUSH_WINDOW_TITLE_SEQUENCE);
         stdout().execute(EnableBracketedPaste)?;
         stdout().execute(EnableMouseCapture)?;
@@ -315,6 +319,27 @@ impl Drop for TerminalGuard {
             "terminal restored"
         );
     }
+}
+
+/// The hook `ratatui::init` installs restores the terminal on every panic,
+/// also on one a worker catches and survives (tool tasks, highlighting, image
+/// decoding), after which the UI keeps drawing over the shell in cooked mode.
+/// Only a UI thread panic may tear the screen down; the rest go to the log,
+/// since stderr is the screen.
+fn restore_only_on_ui_panics() {
+    let ui_thread = thread::current().id();
+    let restore_and_report = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if thread::current().id() == ui_thread {
+            restore_and_report(info);
+        } else {
+            tracing::error!(
+                panic.payload = info.payload_as_str().unwrap_or(UNKNOWN_PANIC_PAYLOAD),
+                panic.location = info.location().map(ToString::to_string),
+                "panic off the UI thread"
+            );
+        }
+    }));
 }
 
 pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
@@ -446,6 +471,9 @@ pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::catch_unwind;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use test_case::test_case;
 
     fn env<'a>(term_program: Option<&'a str>) -> TerminalEnvironment<'a> {
@@ -706,5 +734,24 @@ mod tests {
             .expect("crossterm write_ansi");
         let wrapped = TerminalMux::Tmux.wrap_for_mux(sequence.clone());
         assert_eq!(parse_dcs_passthrough(&wrapped, "\u{1b}Ptmux;"), sequence);
+    }
+
+    #[test]
+    fn only_ui_thread_panics_reach_the_restoring_hook() {
+        let restores = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&restores);
+        let prev_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        restore_only_on_ui_panics();
+
+        let _ = thread::spawn(|| catch_unwind(|| panic!("worker"))).join();
+        let after_worker = restores.load(Ordering::SeqCst);
+        let _ = catch_unwind(|| panic!("ui"));
+        let after_ui = restores.load(Ordering::SeqCst);
+
+        panic::set_hook(prev_hook);
+        assert_eq!((after_worker, after_ui), (0, 1));
     }
 }
