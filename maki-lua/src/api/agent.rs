@@ -31,7 +31,7 @@ use maki_providers::model_registry;
 use maki_providers::provider;
 use maki_providers::{
     AgentError, ContentBlock, ContextGauge, Message, Model, RequestOptions, Role, ThinkingConfig,
-    add_cost,
+    TokenUsage, add_cost,
 };
 use maki_storage::id::MakiId;
 use maki_storage::now_epoch;
@@ -1863,16 +1863,68 @@ async fn prompt(
     let inner = Arc::clone(&this.inner);
     let inbox = Arc::clone(&this.inbox);
     drop(this);
+    // Off the Lua thread, which every plugin shares. The session lock, the run
+    // and its settle live in this one task, so a dropped prompt drops them
+    // together, in the order `run_prompt` relies on.
+    match smol::spawn(run_prompt(inner, inbox, caller_cancel, message)).await {
+        PromptReply::Error(err) => Ok(err_pair(err)),
+        PromptReply::CutShort { partial, err } => {
+            let tbl = if partial.is_empty() {
+                None
+            } else {
+                let tbl = lua.create_table()?;
+                tbl.set("text", partial)?;
+                Some(tbl)
+            };
+            Ok((tbl, Some(err)))
+        }
+        PromptReply::Answered {
+            text,
+            duration,
+            usage,
+        } => {
+            let tbl = lua.create_table()?;
+            tbl.set("text", text)?;
+            tbl.set("duration_ms", duration.as_millis() as u64)?;
+            tbl.set("input_tokens", usage.total_input())?;
+            tbl.set("output_tokens", usage.output)?;
+            Ok((Some(tbl), None))
+        }
+    }
+}
+
+/// What a prompt comes back with. It is worked out off the Lua thread, and
+/// only the Lua values are built on it.
+enum PromptReply {
+    Error(String),
+    /// A run cut short after streaming `partial`, empty when it streamed none.
+    CutShort {
+        partial: String,
+        err: String,
+    },
+    Answered {
+        text: String,
+        duration: Duration,
+        usage: TokenUsage,
+    },
+}
+
+async fn run_prompt(
+    inner: Arc<AsyncMutex<SessionState>>,
+    inbox: Arc<SubagentInbox>,
+    caller_cancel: Option<CancelToken>,
+    message: String,
+) -> PromptReply {
     let mut guard = match &caller_cancel {
         Some(cancel) => match cancel.race(inner.lock()).await {
             Ok(guard) => guard,
-            Err(_) => return Ok(err_pair(CANCELLED_MSG)),
+            Err(_) => return PromptReply::Error(CANCELLED_MSG.into()),
         },
         None => inner.lock().await,
     };
     let s = &mut *guard;
     if let Some(refusal) = s.refusal() {
-        return Ok(err_pair(refusal));
+        return PromptReply::Error(refusal.into());
     }
     // The user can lower the effort while a monitor sits idle, so we ask the
     // seed again on every prompt. Plan mode is left out on purpose. Each write
@@ -1880,7 +1932,7 @@ async fn prompt(
     let mut watch = match (&s.background, caller_cancel) {
         (Some(background), Some(caller_cancel)) => {
             let Some(seed) = AgentSeed::live(background.session) else {
-                return Ok(err_pair(not_live(background.session)));
+                return PromptReply::Error(not_live(background.session));
             };
             s.opts = session_opts(
                 background.thinking,
@@ -2000,14 +2052,7 @@ async fn prompt(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let tbl = if partial.is_empty() {
-            None
-        } else {
-            let tbl = lua.create_table()?;
-            tbl.set("text", partial)?;
-            Some(tbl)
-        };
-        return Ok((tbl, Some(err)));
+        return PromptReply::CutShort { partial, err };
     }
     // The relay reaches `Done` only after every `TurnComplete`, so once it has,
     // all our `ToolLive::Usage` messages sit in the live channel before
@@ -2026,14 +2071,11 @@ async fn prompt(
                 _ => None,
             })
         });
-    let text = text.map_or_else(String::new, str::to_owned);
-
-    let tbl = lua.create_table()?;
-    tbl.set("text", text)?;
-    tbl.set("duration_ms", s.start.elapsed().as_millis() as u64)?;
-    tbl.set("input_tokens", usage.total_input())?;
-    tbl.set("output_tokens", usage.output)?;
-    Ok((Some(tbl), None))
+    PromptReply::Answered {
+        text: text.map_or_else(String::new, str::to_owned),
+        duration: s.start.elapsed(),
+        usage,
+    }
 }
 
 /// Hand the subagent a message without waiting, the way a user typing in its
@@ -2132,6 +2174,8 @@ fn call_local_tool(
 
 #[cfg(test)]
 mod tests {
+    use std::thread::{self, ThreadId};
+
     use flume::Sender;
     use futures_lite::future::poll_once;
     use maki_agent::prompt::{PromptId, ResolvedPrompts};
@@ -2366,7 +2410,7 @@ mod tests {
     const CHILD_INSTRUCTIONS: &str = "Keep {{identity}} literal.";
     const CHILD_RESPONSE: &str = "Analysis complete.";
 
-    struct PromptRecorder(Sender<String>);
+    struct PromptRecorder(Sender<(ThreadId, String)>);
 
     impl Provider for PromptRecorder {
         fn stream_message<'a>(
@@ -2380,7 +2424,9 @@ mod tests {
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async move {
-                self.0.send(system.to_owned()).unwrap();
+                self.0
+                    .send((thread::current().id(), system.to_owned()))
+                    .unwrap();
                 Ok(StreamResponse {
                     message: Message {
                         role: Role::Assistant,
@@ -2441,9 +2487,66 @@ mod tests {
             assert!(error.is_none(), "{error:?}");
         });
         assert_eq!(
-            requests.recv().unwrap(),
+            requests.recv().unwrap().1,
             format!("You analyse evidence.\n{CHILD_INSTRUCTIONS}")
         );
+    }
+
+    /// The thread awaiting the prompt stands in for the Lua thread, which
+    /// every plugin shares.
+    #[test]
+    fn a_subagent_runs_off_the_thread_that_prompts_it() {
+        let lua = Lua::new();
+        let (sent, threads) = flume::unbounded();
+        let mut ctx = stub_ctx_with(&AgentMode::Build, None, Some(PARENT_ID));
+        ctx.provider = Arc::new(PromptRecorder(sent));
+        smol::block_on(async {
+            let sess = native_session(&lua, &ctx).await;
+            let (_, error) = prompt(lua.clone(), sess.borrow().unwrap(), SESSION_PROMPT.into())
+                .await
+                .unwrap();
+            close(lua.clone(), sess.borrow().unwrap()).await.unwrap();
+            assert!(error.is_none(), "{error:?}");
+        });
+        assert_ne!(threads.recv().unwrap().0, thread::current().id());
+    }
+
+    #[test]
+    fn a_prompt_dropped_mid_run_leaves_the_session_to_the_next() {
+        let lua = Lua::new();
+        let (requests_tx, requests) = flume::unbounded();
+        let (release, release_rx) = flume::unbounded();
+        let mut ctx = stub_ctx_with(&AgentMode::Build, None, Some(PARENT_ID));
+        ctx.provider = Arc::new(GatedProvider {
+            requests: requests_tx,
+            release: release_rx,
+        });
+        let run = async {
+            let sess = native_session(&lua, &ctx).await;
+            let first = prompt(lua.clone(), sess.borrow().unwrap(), SESSION_PROMPT.into());
+            futures_lite::future::or(
+                async {
+                    first.await.unwrap();
+                    panic!("the first prompt should still wait for its reply");
+                },
+                async { requests.recv_async().await.unwrap() },
+            )
+            .await;
+            release.send(()).unwrap();
+            let (reply, error) = prompt(lua.clone(), sess.borrow().unwrap(), SESSION_PROMPT.into())
+                .await
+                .unwrap();
+            close(lua.clone(), sess.borrow().unwrap()).await.unwrap();
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(
+                reply.unwrap().get::<String>("text").unwrap(),
+                CHILD_RESPONSE
+            );
+        };
+        smol::block_on(futures_lite::future::or(run, async {
+            smol::Timer::after(SESSION_TIMEOUT).await;
+            panic!("the second prompt never got the session");
+        }));
     }
 
     const NUDGE: &str = "new finding, hurry up";
