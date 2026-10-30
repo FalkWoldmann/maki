@@ -25,6 +25,7 @@ const LOG_ENV_SHARED: &str = "RUST_LOG";
 const DEFAULT_LOG_LEVEL: LevelFilter = LevelFilter::INFO;
 
 const PROVIDER_PRIORITY: &[&str] = &[
+    "bedrock",
     "anthropic",
     "openai",
     "xai",

@@ -1,7 +1,6 @@
 //! Anthropic allows 4 cache breakpoints per request. We place them on: the last tool
 //! definition, the system prompt, and the last block of the 2 most recent messages.
 
-pub(crate) mod bedrock;
 pub(crate) mod shared;
 
 use std::sync::{Arc, Mutex};
@@ -29,7 +28,8 @@ use crate::{
     AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse, UsageLimit,
 };
 
-use super::{KeyHeader, KeyPool, KeyRotation, ResolvedAuth, Timeouts};
+use super::bedrock::Bedrock;
+use super::{KeyHeader, KeyPool, KeyRotation, RequestSigner, ResolvedAuth, Timeouts};
 
 const API_VERSION: &str = "2023-06-01";
 const API_ORIGIN: &str = "https://api.anthropic.com";
@@ -53,24 +53,10 @@ const LOGIN_URL: &str = "https://console.anthropic.com/settings/keys";
 /// The messages endpoint, which is what the docs quote; the provider itself
 /// builds it from [`API_ORIGIN`] plus [`MESSAGES_PATH`].
 const DOC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const TOOL_EXAMPLES_FIELD: &str = "input_examples";
 const FEATURES: &str = "Prompt caching, thinking mode (adaptive/budgeted), advanced tool use";
 
 const LONG_CONTEXT_NOTE: &str = r#"Add `-1m` to any Claude model, like `claude-sonnet-4-6-1m`, to use the 1M token context window."#;
-
-const BEDROCK_NOTE: &str = r#"#### Amazon Bedrock
-
-If you already use Claude through AWS Bedrock, you can point Maki at it instead of the direct Anthropic API. Set `CLAUDE_CODE_USE_BEDROCK=1` and Maki will route all Anthropic requests through Bedrock. The same models, the same features, just a different door.
-
-You will need `AWS_REGION` and one of the following for auth:
-
-| Method | Env vars |
-|--------|----------|
-| IAM credentials | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (and optionally `AWS_SESSION_TOKEN`) |
-| Credentials file | `AWS_PROFILE` (defaults to `default`), reads `~/.aws/credentials` |
-| Bearer token | `AWS_BEARER_TOKEN_BEDROCK` |
-| Gateway proxy | `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` + `ANTHROPIC_BEDROCK_BASE_URL` (skips signing, useful behind a proxy that handles auth) |
-
-You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROPIC_BEDROCK_BASE_URL`. These env var names match Claude Code, so if you were already using Bedrock there, the same setup works here."#;
 
 pub(crate) const SPEC: ProviderSpec = ProviderSpec {
     slug: SLUG,
@@ -106,18 +92,14 @@ pub(crate) const SPEC: ProviderSpec = ProviderSpec {
         features: Some(FEATURES),
         auth: AuthDoc::EnvVar,
         catalog: CatalogDoc::Table,
-        trailing_notes: &[LONG_CONTEXT_NOTE, BEDROCK_NOTE],
+        trailing_notes: &[LONG_CONTEXT_NOTE],
     },
 };
 
 inventory::submit!(SPEC.config_row());
 
 fn create(timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
-    if bedrock::is_enabled() {
-        Ok(Box::new(bedrock::Bedrock::new(timeouts)?))
-    } else {
-        Ok(Box::new(Anthropic::new(timeouts)?))
-    }
+    Ok(Box::new(Anthropic::new(timeouts)?))
 }
 
 fn create_with_auth(
@@ -354,12 +336,34 @@ fn resolve_auth_from_key(
     )
 }
 
+/// A request to the Messages API, which both backends speak.
+pub(crate) fn api_request(method: &str, url: &str) -> isahc::http::request::Builder {
+    Request::builder()
+        .method(method)
+        .uri(url)
+        .header("anthropic-version", API_VERSION)
+        .header("user-agent", super::user_agent())
+}
+
 pub struct Anthropic {
     client: HttpClient,
-    auth: Arc<Mutex<super::ResolvedAuth>>,
-    key_pool: Option<KeyPool>,
+    backend: Backend,
     system_prefix: Option<String>,
     stream_timeout: Duration,
+}
+
+/// Where requests go and how they are authenticated. The request and the
+/// stream are the same for both, the features around them are not.
+enum Backend {
+    /// The Anthropic API, or a gateway that speaks it.
+    Api(Api),
+    /// Claude on Amazon Bedrock, for [`super::bedrock`].
+    Bedrock(Arc<Bedrock>),
+}
+
+struct Api {
+    auth: Arc<Mutex<super::ResolvedAuth>>,
+    key_pool: Option<KeyPool>,
     /// Env / `providers.toml` / inventory default, resolved once at construction.
     /// Reused by key rotation / reload so they do not re-parse providers.toml.
     resolved_base_url: Option<String>,
@@ -368,51 +372,34 @@ pub struct Anthropic {
     fallback_base_url: Option<String>,
 }
 
-impl Anthropic {
-    pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
-        let pool = KeyPool::resolve("anthropic", ENV_VAR)?;
-        let resolved_base_url = resolve_anthropic_base_url();
-        let resolved = resolve_auth_from_key(pool.current(), resolved_base_url.clone())?;
-        debug!(keys = pool.len(), "using API key authentication");
-        Ok(Self {
-            client: super::http_client(timeouts),
-            auth: Arc::new(Mutex::new(resolved)),
-            key_pool: Some(pool),
-            system_prefix: None,
-            stream_timeout: timeouts.stream,
-            resolved_base_url,
-            fallback_base_url: None,
-        })
-    }
-
-    pub(crate) fn with_auth(
-        auth: Arc<Mutex<super::ResolvedAuth>>,
-        timeouts: super::Timeouts,
-    ) -> Self {
-        Self {
-            client: super::http_client(timeouts),
-            auth,
-            key_pool: None,
-            system_prefix: None,
-            stream_timeout: timeouts.stream,
-            // Custom / dynamic callers own their base URL; treating it as the
-            // anthropic override would make every third-party endpoint look
-            // first party and poll `/api/oauth/usage` against it.
-            resolved_base_url: None,
-            fallback_base_url: None,
+impl Backend {
+    fn top_p(&self) -> Option<f64> {
+        match self {
+            Self::Api(api) => api.auth.lock().unwrap().top_p,
+            Self::Bedrock(bedrock) => bedrock.top_p,
         }
     }
+}
 
-    pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
-        self.system_prefix = prefix;
-        self
+/// Bedrock spells some betas its own way and has no fast mode.
+fn bedrock_betas(model: &Model, tools: &Value) -> Vec<&'static str> {
+    let has_examples = tools
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|t| t.get(TOOL_EXAMPLES_FIELD).is_some()));
+    let mut betas = Vec::new();
+    if has_examples {
+        betas.push(shared::BETA_TOOL_EXAMPLES_BEDROCK);
     }
-
-    pub(crate) fn with_fallback_base_url(mut self, base_url: Option<String>) -> Self {
-        self.fallback_base_url = base_url;
-        self
+    if shared::has_deferred_tools(tools) {
+        betas.push(shared::BETA_DEFERRED_TOOLS_BEDROCK);
     }
+    if model.id.ends_with(shared::LONG_CONTEXT_SUFFIX) {
+        betas.push(shared::LONG_CONTEXT_BETA);
+    }
+    betas
+}
 
+impl Api {
     /// Where requests go. Everything that asks "is this the real API?" must ask
     /// here, or a plugin's `base_url` (kept in the fallback) reads as Anthropic.
     fn base_url<'a>(&'a self, auth: &'a super::ResolvedAuth) -> &'a str {
@@ -422,16 +409,108 @@ impl Anthropic {
             .unwrap_or(API_ORIGIN)
     }
 
+    fn is_anthropic_api(&self) -> bool {
+        is_anthropic_api(self.base_url(&self.auth.lock().unwrap()))
+    }
+
     fn build_request(&self, method: &str, path: &str) -> isahc::http::request::Builder {
         let auth = self.auth.lock().unwrap();
         let url = format!("{}{path}", origin(self.base_url(&auth)));
-        auth.configure_request(
-            Request::builder()
-                .method(method)
-                .uri(url)
-                .header("anthropic-version", API_VERSION)
-                .header("user-agent", super::user_agent()),
-        )
+        auth.configure_request(api_request(method, &url))
+    }
+
+    fn betas(
+        &self,
+        body: &mut Value,
+        model: &Model,
+        tools: &Value,
+        opts: RequestOptions,
+    ) -> Vec<&'static str> {
+        let mut betas = Vec::new();
+        if apply_fast_mode(body, model, opts) {
+            betas.push(FAST_MODE_BETA);
+        }
+        if model.id.ends_with(shared::LONG_CONTEXT_SUFFIX) {
+            betas.push(shared::LONG_CONTEXT_BETA);
+        }
+        if shared::has_deferred_tools(tools) {
+            betas.push(shared::BETA_DEFERRED_TOOLS);
+        }
+        if reports_block_binding(body, self.is_anthropic_api()) {
+            betas.push(BLOCK_BINDING_BETA);
+        }
+        betas
+    }
+
+    fn reload(&self) -> Result<(), AgentError> {
+        // Credentials handed in through `with_auth` belong to the caller,
+        // and our vendor key must never follow them to a third-party origin.
+        if self.key_pool.is_none() {
+            return Ok(());
+        }
+        let pool = KeyPool::resolve("anthropic", ENV_VAR)?;
+        *self.auth.lock().unwrap() =
+            resolve_auth_from_key(pool.current(), self.resolved_base_url.clone())?;
+        debug!("reloaded Anthropic auth from env");
+        Ok(())
+    }
+}
+
+impl Anthropic {
+    pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
+        let pool = KeyPool::resolve("anthropic", ENV_VAR)?;
+        let resolved_base_url = resolve_anthropic_base_url();
+        let resolved = resolve_auth_from_key(pool.current(), resolved_base_url.clone())?;
+        debug!(keys = pool.len(), "using API key authentication");
+        let api = Api {
+            auth: Arc::new(Mutex::new(resolved)),
+            key_pool: Some(pool),
+            resolved_base_url,
+            fallback_base_url: None,
+        };
+        Ok(Self::with_backend(Backend::Api(api), timeouts))
+    }
+
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<super::ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Self {
+        let api = Api {
+            auth,
+            key_pool: None,
+            // Custom / dynamic callers own their base URL; treating it as the
+            // anthropic override would make every third-party endpoint look
+            // first party and poll `/api/oauth/usage` against it.
+            resolved_base_url: None,
+            fallback_base_url: None,
+        };
+        Self::with_backend(Backend::Api(api), timeouts)
+    }
+
+    pub(crate) fn on_bedrock(bedrock: Arc<Bedrock>, timeouts: super::Timeouts) -> Self {
+        Self::with_backend(Backend::Bedrock(bedrock), timeouts)
+    }
+
+    fn with_backend(backend: Backend, timeouts: super::Timeouts) -> Self {
+        Self {
+            client: super::http_client(timeouts),
+            backend,
+            system_prefix: None,
+            stream_timeout: timeouts.stream,
+        }
+    }
+
+    pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
+        self.system_prefix = prefix;
+        self
+    }
+
+    /// Only `with_auth` callers have one, and those are always [`Backend::Api`].
+    pub(crate) fn with_fallback_base_url(mut self, base_url: Option<String>) -> Self {
+        if let Backend::Api(api) = &mut self.backend {
+            api.fallback_base_url = base_url;
+        }
+        self
     }
 
     async fn do_stream_request(
@@ -441,11 +520,16 @@ impl Anthropic {
         betas: &[&str],
     ) -> Result<StreamResponse, AgentError> {
         let json_body = serde_json::to_vec(body)?;
-        let mut builder = self
-            .build_request("POST", MESSAGES_PATH)
-            .header("content-type", "application/json");
+        let mut builder = match &self.backend {
+            Backend::Api(api) => api.build_request("POST", MESSAGES_PATH),
+            Backend::Bedrock(bedrock) => api_request("POST", &bedrock.messages_url().await),
+        }
+        .header("content-type", "application/json");
         if !betas.is_empty() {
             builder = builder.header("anthropic-beta", betas.join(","));
+        }
+        if let Backend::Bedrock(bedrock) = &self.backend {
+            builder = bedrock.sign(builder, &json_body).await?;
         }
         let request = builder.body(json_body)?;
         let response = self.client.send_async(request).await?;
@@ -458,7 +542,7 @@ impl Anthropic {
         }
     }
 
-    async fn do_list_models(&self) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
+    async fn do_list_models(&self, api: &Api) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
         let mut models = Vec::new();
         let mut after_id: Option<String> = None;
 
@@ -468,7 +552,7 @@ impl Anthropic {
                 path.push_str(&format!("&after_id={cursor}"));
             }
 
-            let request = self.build_request("GET", &path).body(())?;
+            let request = api.build_request("GET", &path).body(())?;
             let mut response = self.client.send_async(request).await?;
             if response.status().as_u16() != 200 {
                 return Err(AgentError::from_response(response).await);
@@ -527,33 +611,20 @@ impl Provider for Anthropic {
                 }]
             };
 
-            let (top_p, anthropic_api) = {
-                let auth = self.auth.lock().unwrap();
-                (auth.top_p, is_anthropic_api(self.base_url(&auth)))
-            };
             let mut body = shared::build_request_body_with_system(
                 model,
                 messages,
                 &system_blocks,
                 tools,
                 opts.thinking,
-                top_p,
+                self.backend.top_p(),
             );
             body["model"] = json!(shared::strip_long_context(&model.id));
             body["stream"] = json!(true);
-            let mut betas = Vec::new();
-            if apply_fast_mode(&mut body, model, opts) {
-                betas.push(FAST_MODE_BETA);
-            }
-            if model.id.ends_with(shared::LONG_CONTEXT_SUFFIX) {
-                betas.push(shared::LONG_CONTEXT_BETA);
-            }
-            if shared::has_deferred_tools(tools) {
-                betas.push(shared::BETA_DEFERRED_TOOLS);
-            }
-            if reports_block_binding(&body, anthropic_api) {
-                betas.push(BLOCK_BINDING_BETA);
-            }
+            let betas = match &self.backend {
+                Backend::Api(api) => api.betas(&mut body, model, tools, opts),
+                Backend::Bedrock(_) => bedrock_betas(model, tools),
+            };
 
             debug!(model = %model.id, num_messages = messages.len(), thinking = ?opts.thinking, ?betas, "sending API request");
             self.do_stream_request(&body, event_tx, &betas).await
@@ -561,42 +632,60 @@ impl Provider for Anthropic {
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
-        Box::pin(self.do_list_models())
+        Box::pin(async move {
+            match &self.backend {
+                Backend::Api(api) => self.do_list_models(api).await,
+                // `bedrock::BedrockProvider` lists, out of models.dev.
+                Backend::Bedrock(_) => Ok(Vec::new()),
+            }
+        })
     }
 
-    fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+    fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
-            // Credentials handed in through `with_auth` belong to the caller,
-            // and our vendor key must never follow them to a third-party origin.
-            if self.key_pool.is_none() {
-                return Ok(());
+            if let Backend::Bedrock(bedrock) = &self.backend {
+                bedrock.forget_credentials().await;
             }
-            let pool = KeyPool::resolve("anthropic", ENV_VAR)?;
-            *self.auth.lock().unwrap() =
-                resolve_auth_from_key(pool.current(), self.resolved_base_url.clone())?;
-            debug!("reloaded Anthropic auth from env");
             Ok(())
         })
     }
 
+    fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async {
+            match &self.backend {
+                Backend::Api(api) => api.reload(),
+                Backend::Bedrock(bedrock) => {
+                    bedrock.forget_credentials().await;
+                    Ok(())
+                }
+            }
+        })
+    }
+
     fn keys(&self) -> Option<KeyRotation<'_>> {
+        let Backend::Api(api) = &self.backend else {
+            return None;
+        };
         Some(KeyRotation::new(
-            self.key_pool.as_ref()?,
-            &self.auth,
+            api.key_pool.as_ref()?,
+            &api.auth,
             KeyHeader::Raw(API_KEY_HEADER),
         ))
     }
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async move {
+            let Backend::Api(api) = &self.backend else {
+                return Ok(None);
+            };
             if !usage_eligible(
-                &self.auth.lock().unwrap(),
-                self.fallback_base_url.as_deref(),
-                self.resolved_base_url.as_deref(),
+                &api.auth.lock().unwrap(),
+                api.fallback_base_url.as_deref(),
+                api.resolved_base_url.as_deref(),
             ) {
                 return Ok(None);
             }
-            let request = self
+            let request = api
                 .build_request("GET", USAGE_PATH)
                 .header("anthropic-beta", OAUTH_BETA)
                 .body(())?;
@@ -816,11 +905,12 @@ mod tests {
             Arc::new(Mutex::new(auth)),
             crate::providers::Timeouts::default(),
         );
-        assert!(provider.resolved_base_url.is_none());
+        let api = api(&provider);
+        assert!(api.resolved_base_url.is_none());
         assert!(!usage_eligible(
-            &provider.auth.lock().unwrap(),
+            &api.auth.lock().unwrap(),
             None,
-            provider.resolved_base_url.as_deref()
+            api.resolved_base_url.as_deref()
         ));
     }
 
@@ -834,7 +924,7 @@ mod tests {
         )
         .with_fallback_base_url(Some(THIRD_PARTY_BASE_URL.into()));
         smol::block_on(provider.reload_auth()).unwrap();
-        assert_eq!(provider.auth.lock().unwrap().headers, headers);
+        assert_eq!(api(&provider).auth.lock().unwrap().headers, headers);
     }
 
     #[test_case(None, true ; "no_fallback_is_anthropic")]
@@ -846,8 +936,7 @@ mod tests {
             crate::providers::Timeouts::default(),
         )
         .with_fallback_base_url(fallback.map(String::from));
-        let auth = provider.auth.lock().unwrap();
-        assert_eq!(is_anthropic_api(provider.base_url(&auth)), expected);
+        assert_eq!(api(&provider).is_anthropic_api(), expected);
     }
 
     #[test]
@@ -871,6 +960,13 @@ mod tests {
     #[test_case("https://api.anthropic.com/v1/messages?beta=true", "https://api.anthropic.com" ; "strips_query_string")]
     fn origin_normalizes(input: &str, expected: &str) {
         assert_eq!(origin(input), expected);
+    }
+
+    fn api(provider: &Anthropic) -> &Api {
+        let Backend::Api(api) = &provider.backend else {
+            panic!("expected the Anthropic API backend");
+        };
+        api
     }
 
     fn mock_response(data: impl Into<Vec<u8>>) -> isahc::Response<isahc::AsyncBody> {

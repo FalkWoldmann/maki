@@ -48,8 +48,11 @@ const BLOCKED_PROVIDER_IN_CATALOG: &[&str] = &["zai-coding-plan"];
 
 /// models.dev ids for providers we ship a client for under another name, so
 /// their metadata lands under the slug a model spec is written with.
-const BUILTIN_CATALOG_IDS: &[(&str, &str)] =
-    &[("github-copilot", "copilot"), ("regolo-ai", "regolo")];
+const BUILTIN_CATALOG_IDS: &[(&str, &str)] = &[
+    ("amazon-bedrock", "bedrock"),
+    ("github-copilot", "copilot"),
+    ("regolo-ai", "regolo"),
+];
 
 /// Builtins with no native client of their own, so a spec row knowing them
 /// must not drop them from the catalog.
@@ -498,6 +501,21 @@ pub fn catalog_providers_if_available() -> Option<Vec<ProviderData>> {
     let catalog = SHARED_CATALOG.get()?;
     let guard = catalog.lock().ok()?;
     Some(guard.all_providers())
+}
+
+/// What models.dev says about the models of a provider maki ships a client
+/// for. Blocks on the first download.
+pub(crate) fn builtin_model_infos(slug: &str) -> Vec<ModelInfo> {
+    let guard = init_shared_catalog_if_needed().lock().unwrap();
+    let mut models: Vec<ModelInfo> = guard
+        .builtin_models
+        .get(slug)
+        .into_iter()
+        .flatten()
+        .map(|(id, meta)| meta.model_info(id))
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models
 }
 
 /// Returns the ProviderData for a specific catalog provider, if found.

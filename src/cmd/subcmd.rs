@@ -9,7 +9,8 @@ use maki_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use maki_agent::tools::ToolRegistry;
 use maki_config::project::{self, TrustMode};
 use maki_config::providers::{
-    ProviderDef, ProvidersConfig, all_builtins, builtin_provider, resolve_api_key_env,
+    BEDROCK_AWS_PLAN, BEDROCK_SLUG, ProviderDef, ProvidersConfig, all_builtins,
+    bedrock_profile_default, bedrock_region_default, builtin_provider, resolve_api_key_env,
     resolve_base_url, resolve_default_model, resolve_display_name, resolve_login_url, slugify,
 };
 use maki_providers::provider::fetch_all_models;
@@ -71,6 +72,10 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
     if hooked || (builtin.is_none() && plugin::is_registered(slug)) {
         plugin::login(slug)?;
         return Ok(());
+    }
+
+    if slug == BEDROCK_SLUG {
+        return login_bedrock(storage);
     }
 
     let mut config = ProvidersConfig::load();
@@ -159,6 +164,65 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Asks for the method every time, so a login can switch between AWS
+/// credentials and an API key.
+fn login_bedrock(storage: &StateDir) -> Result<()> {
+    let Some(plan) = select_plan(BEDROCK_SLUG, builtin_provider(BEDROCK_SLUG), None)? else {
+        bail!("Bedrock has no login methods");
+    };
+    let mut config = ProvidersConfig::load();
+    let mut def = config.get(BEDROCK_SLUG).cloned().unwrap_or_default();
+    let display = resolve_display_name(BEDROCK_SLUG, Some(&def));
+
+    def.region = prompt_with_default("AWS region", bedrock_region_default(Some(&def)))?;
+    let api_key = if plan == BEDROCK_AWS_PLAN {
+        def.profile = prompt_with_default("AWS profile", bedrock_profile_default(Some(&def)))?;
+        String::new()
+    } else {
+        prompt_api_key(
+            resolve_login_url(BEDROCK_SLUG, Some(&plan)).as_deref(),
+            &display,
+            false,
+        )?
+    };
+    def.plan = Some(plan);
+
+    if !api_key.is_empty() {
+        let creds = ProviderCredentials {
+            api_key,
+            host: None,
+        };
+        save_provider_credentials(storage, BEDROCK_SLUG, &creds).context("save credentials")?;
+    }
+    config.upsert(BEDROCK_SLUG.to_string(), def);
+    config.save().context("save providers.toml")?;
+
+    let default_model = resolve_default_model(BEDROCK_SLUG, config.get(BEDROCK_SLUG));
+    if let Some(model) = &default_model {
+        persist_model(storage, model);
+    }
+    println!();
+    println!("  \x1b[32m✓\x1b[0m Configured: {display}");
+    if let Some(model) = &default_model {
+        println!("  Default model: {model}");
+    }
+    Ok(())
+}
+
+/// `None` when both the answer and the default are empty.
+fn prompt_with_default(label: &str, default: Option<String>) -> Result<Option<String>> {
+    print!("  {label} [{}]: ", default.as_deref().unwrap_or_default());
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+    Ok(if input.is_empty() {
+        default
+    } else {
+        Some(input.to_string())
+    })
 }
 
 fn catalog_slugs() -> Vec<String> {

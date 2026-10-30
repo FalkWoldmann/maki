@@ -786,7 +786,7 @@ const SNAPSHOT_DATE_LEN: usize = "20250514".len();
 /// a letter or digit splits the id, and we read what follows the `claude` word.
 /// Old ids put the version first (`claude-3-5-sonnet`), and a numeric family
 /// tells us there is no modern version to read.
-fn claude_version(model_id: &str) -> Option<(&str, (u32, u32))> {
+pub(crate) fn claude_version(model_id: &str) -> Option<(&str, (u32, u32))> {
     let mut tokens = model_id
         .split(|c: char| !c.is_ascii_alphanumeric())
         .skip_while(|token| *token != CLAUDE)

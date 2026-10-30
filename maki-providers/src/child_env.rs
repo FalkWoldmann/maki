@@ -3,7 +3,6 @@ use std::process::Command;
 use maki_config::providers::{ProvidersConfig, resolve_api_key_env};
 use maki_config::{PROVIDER_BUILTINS, ShellPreference, env_var_refs};
 
-use crate::providers::anthropic::bedrock;
 use crate::providers::catalog;
 use crate::providers::copilot::auth as copilot_auth;
 use crate::spec::ProviderRegistry;
@@ -49,7 +48,6 @@ fn provider_key_vars(config: &ProvidersConfig, catalog_vars: Vec<String>) -> Vec
         .into_iter()
         .map(|spec| spec.api_key_env)
         .chain(copilot_auth::TOKEN_ENV_VARS.iter().copied())
-        .chain([bedrock::BEARER_TOKEN_ENV])
         .filter(|var| !var.is_empty())
         .map(str::to_owned);
     // The key stays the user's secret even while its plugin is off or still
@@ -205,7 +203,7 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::providers::anthropic;
+    use crate::providers::{anthropic, bedrock};
 
     const CUSTOM_SLUG: &str = "my-proxy";
     const CUSTOM_KEY_ENV: &str = "MY_PROXY_SECRET";

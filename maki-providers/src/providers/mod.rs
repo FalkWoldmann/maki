@@ -15,10 +15,12 @@ use maki_storage::StateDir;
 use maki_storage::auth::{OAuthTokens, delete_tokens, load_tokens, lock_tokens, save_tokens};
 
 use crate::AgentError;
+use crate::provider::BoxFuture;
 use crate::retry::RetryPolicy;
 
 pub(crate) mod anthropic;
 pub(crate) mod aperture;
+pub(crate) mod bedrock;
 pub(crate) mod catalog;
 pub(crate) mod codec;
 pub(crate) mod copilot;
@@ -152,6 +154,17 @@ pub(crate) fn needs_refresh(dir: &StateDir, provider: &str, held: Option<&OAuthT
     }
 }
 
+/// Auth that covers the request itself rather than riding along as a fixed
+/// header, which is what AWS SigV4 does.
+pub(crate) trait RequestSigner: Send + Sync {
+    /// Covers the method, URL and headers `builder` already holds.
+    fn sign<'a>(
+        &'a self,
+        builder: Builder,
+        body: &'a [u8],
+    ) -> BoxFuture<'a, Result<Builder, AgentError>>;
+}
+
 #[derive(Clone)]
 pub struct ResolvedAuth {
     pub base_url: Option<String>,
@@ -163,6 +176,7 @@ pub struct ResolvedAuth {
     /// `[<slug>] top_p`, carried with the auth so whoever the slug's
     /// credentials reach (aperture routes, catalog sub-providers) sends it.
     pub top_p: Option<f64>,
+    signer: Option<Arc<dyn RequestSigner>>,
 }
 
 impl ResolvedAuth {
@@ -176,6 +190,7 @@ impl ResolvedAuth {
             headers,
             config_headers: Vec::new(),
             top_p: None,
+            signer: None,
         };
         if let Some(def) = maki_config::providers::ProvidersConfig::load().get(slug) {
             auth.apply_config_headers(slug, &def.headers)?;
@@ -224,6 +239,7 @@ impl ResolvedAuth {
             headers: Vec::new(),
             config_headers: Vec::new(),
             top_p: None,
+            signer: None,
         }
     }
 
@@ -237,6 +253,20 @@ impl ResolvedAuth {
     pub fn with_base_url(mut self, base_url: Option<String>) -> Self {
         self.base_url = base_url;
         self
+    }
+
+    pub(crate) fn with_signer(mut self, signer: Arc<dyn RequestSigner>) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+
+    /// The last step before the body goes on, once nothing about the request
+    /// changes anymore.
+    pub(crate) async fn sign(&self, builder: Builder, body: &[u8]) -> Result<Builder, AgentError> {
+        match &self.signer {
+            Some(signer) => signer.sign(builder, body).await,
+            None => Ok(builder),
+        }
     }
 
     /// Set the header carrying the API key, unless `[<slug>.headers]` already
@@ -280,6 +310,7 @@ impl ResolvedAuth {
             headers,
             config_headers: Vec::new(),
             top_p: None,
+            signer: None,
         }
     }
 }

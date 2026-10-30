@@ -8,8 +8,8 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelTier};
 use crate::pricing::PricingSchedule;
 use crate::provider::Provider;
 use crate::providers::{
-    ResolvedAuth, Timeouts, anthropic, aperture, copilot, custom, google, llama_cpp, ollama,
-    openai, opencode, plugin, xai, zai,
+    ResolvedAuth, Timeouts, anthropic, aperture, bedrock, copilot, custom, google, llama_cpp,
+    ollama, openai, opencode, plugin, xai, zai,
 };
 use crate::types::ThinkingFallback;
 use crate::{AgentError, Effort};
@@ -223,6 +223,7 @@ impl ProviderSpec {
 /// addresses: identify a spec by `slug`, never by pointer.
 const BUILTINS: &[ProviderSpec] = &[
     anthropic::SPEC,
+    bedrock::SPEC,
     openai::SPEC,
     google::SPEC,
     copilot::SPEC,

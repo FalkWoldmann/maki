@@ -5,7 +5,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Wrap;
 
-use maki_config::providers::{self, Protocol, ProviderDef, ProvidersConfig, slugify};
+use maki_config::providers::{
+    self, BEDROCK_AWS_PLAN, BEDROCK_SLUG, Protocol, ProviderDef, ProvidersConfig, slugify,
+};
 use maki_providers::catalog_providers_if_available;
 use maki_storage::StateDir;
 use maki_storage::auth::{
@@ -21,6 +23,12 @@ use crate::theme;
 
 const TITLE: &str = " Login ";
 const CATALOG_UNAVAILABLE_SLUG: &str = "catalog-unavailable";
+const BEDROCK_REGION_TITLE: &str = " AWS region ";
+const BEDROCK_REGION_HINT: &str =
+    "Region, e.g. eu-west-1. Leave empty to use AWS_REGION or your AWS profile";
+const BEDROCK_PROFILE_TITLE: &str = " AWS profile ";
+const BEDROCK_PROFILE_HINT: &str =
+    "Profile from ~/.aws/config. Leave empty to use AWS_PROFILE or the default chain";
 
 const PROTOCOLS: &[(&str, &str)] = &[
     ("openai", "OpenAI-compatible"),
@@ -113,6 +121,14 @@ enum Step {
         slug: String,
         display_name: String,
     },
+    BedrockRegion {
+        input: TextBuffer,
+        plan: String,
+    },
+    /// Only for AWS credentials. An API key goes on to [`Step::EnterKey`].
+    BedrockProfile {
+        input: TextBuffer,
+    },
     EnterKey {
         input: TextBuffer,
         slug: String,
@@ -152,6 +168,10 @@ enum StepAction {
         slug: String,
         display_name: String,
     },
+    GoBedrockRegion {
+        plan: String,
+    },
+    GoBedrockProfile,
     GoDone {
         message: String,
         model_spec: Option<String>,
@@ -185,9 +205,13 @@ impl LoginPicker {
                 let has_key = load_provider_credentials(&storage, b.slug).is_some()
                     || load_tokens(&storage, b.slug).is_some();
                 let has_env = std::env::var(b.default_api_key_env).is_ok();
+                // Any `[bedrock]` entry turns Bedrock on, and its AWS
+                // credentials method saves no key.
                 let configured = !has_key
                     && !has_env
-                    && config.get(b.slug).is_some_and(|d| d.base_url.is_some());
+                    && config
+                        .get(b.slug)
+                        .is_some_and(|d| d.base_url.is_some() || b.slug == BEDROCK_SLUG);
                 ProviderItem {
                     slug: b.slug.to_string(),
                     display_name: b.display_name.to_string(),
@@ -267,7 +291,9 @@ impl LoginPicker {
             Step::EnterKey { input, .. }
             | Step::CustomName { input }
             | Step::CustomUrl { input, .. }
-            | Step::BuiltinUrl { input, .. } => {
+            | Step::BuiltinUrl { input, .. }
+            | Step::BedrockRegion { input, .. }
+            | Step::BedrockProfile { input } => {
                 input.insert_text(text);
                 true
             }
@@ -323,6 +349,9 @@ impl LoginPicker {
                 }
             },
             Step::PickPlan { picker, slug } => match picker.handle_key(key) {
+                PickerAction::Select(item) if slug == BEDROCK_SLUG => StepAction::GoBedrockRegion {
+                    plan: item.key.clone(),
+                },
                 PickerAction::Select(item) => {
                     let config = providers::ProvidersConfig::load();
                     StepAction::GoEnterKey {
@@ -539,6 +568,72 @@ impl LoginPicker {
                     return LoginPickerAction::Consumed;
                 }
             },
+            Step::BedrockRegion { input, plan } => match key.code {
+                KeyCode::Enter => {
+                    let region = non_empty(input.value());
+                    let plan = plan.clone();
+                    let saved = save_bedrock(|def| {
+                        def.plan = Some(plan.clone());
+                        def.region = region;
+                    });
+                    match saved {
+                        Err(message) => StepAction::GoDone {
+                            message,
+                            model_spec: None,
+                            slug: BEDROCK_SLUG.into(),
+                        },
+                        Ok(_) if plan == BEDROCK_AWS_PLAN => StepAction::GoBedrockProfile,
+                        Ok(config) => StepAction::GoEnterKey {
+                            slug: BEDROCK_SLUG.into(),
+                            display_name: providers::resolve_display_name(
+                                BEDROCK_SLUG,
+                                config.get(BEDROCK_SLUG),
+                            ),
+                            plan: Some(plan),
+                            custom: None,
+                            builtin_url: None,
+                            api_key_optional: false,
+                        },
+                    }
+                }
+                KeyCode::Esc => StepAction::Back,
+                _ => {
+                    input.handle_key(key);
+                    return LoginPickerAction::Consumed;
+                }
+            },
+            Step::BedrockProfile { input } => match key.code {
+                KeyCode::Enter => {
+                    let profile = non_empty(input.value());
+                    match save_bedrock(|def| def.profile = profile) {
+                        Err(message) => StepAction::GoDone {
+                            message,
+                            model_spec: None,
+                            slug: BEDROCK_SLUG.into(),
+                        },
+                        Ok(config) => {
+                            let def = config.get(BEDROCK_SLUG);
+                            let model_spec = providers::resolve_default_model(BEDROCK_SLUG, def);
+                            if let (Some(model), Some(storage)) = (&model_spec, &self.storage) {
+                                persist_model(storage, model);
+                            }
+                            StepAction::GoDone {
+                                message: format!(
+                                    "Configured: {} ({BEDROCK_AWS_PLAN})",
+                                    providers::resolve_display_name(BEDROCK_SLUG, def)
+                                ),
+                                model_spec,
+                                slug: BEDROCK_SLUG.into(),
+                            }
+                        }
+                    }
+                }
+                KeyCode::Esc => StepAction::Back,
+                _ => {
+                    input.handle_key(key);
+                    return LoginPickerAction::Consumed;
+                }
+            },
             Step::Done { .. } => {
                 if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
                     StepAction::Close
@@ -587,6 +682,23 @@ impl LoginPicker {
                     input: TextBuffer::new(default),
                     slug,
                     display_name,
+                };
+                LoginPickerAction::Consumed
+            }
+            StepAction::GoBedrockRegion { plan } => {
+                let config = providers::ProvidersConfig::load();
+                let region = providers::bedrock_region_default(config.get(BEDROCK_SLUG));
+                self.step = Step::BedrockRegion {
+                    input: TextBuffer::new(region.unwrap_or_default()),
+                    plan,
+                };
+                LoginPickerAction::Consumed
+            }
+            StepAction::GoBedrockProfile => {
+                let config = providers::ProvidersConfig::load();
+                let profile = providers::bedrock_profile_default(config.get(BEDROCK_SLUG));
+                self.step = Step::BedrockProfile {
+                    input: TextBuffer::new(profile.unwrap_or_default()),
                 };
                 LoginPickerAction::Consumed
             }
@@ -712,6 +824,20 @@ impl LoginPicker {
                 );
                 popup
             }
+            Step::BedrockRegion { input, .. } => text_step(
+                frame,
+                area,
+                input,
+                BEDROCK_REGION_TITLE,
+                BEDROCK_REGION_HINT,
+            ),
+            Step::BedrockProfile { input } => text_step(
+                frame,
+                area,
+                input,
+                BEDROCK_PROFILE_TITLE,
+                BEDROCK_PROFILE_HINT,
+            ),
             Step::EnterKey {
                 input,
                 display_name,
@@ -768,6 +894,38 @@ impl Overlay for LoginPicker {
     fn close(&mut self) {
         self.step = Step::Closed;
     }
+}
+
+fn text_step(frame: &mut Frame, area: Rect, input: &TextBuffer, title: &str, hint: &str) -> Rect {
+    let modal = step_modal(title);
+    let (popup, inner) = modal.render(frame, area, 2);
+    let t = theme::current();
+    let hint = Span::styled(hint.to_string(), t.input_placeholder);
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(vec![Line::from(hint), input_line_with_cursor(input)])
+            .style(Style::new().bg(t.background))
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+    popup
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    Some(value.trim())
+        .filter(|v| !v.is_empty())
+        .map(String::from)
+}
+
+/// Applies `update` to `[bedrock]` and saves `providers.toml`.
+fn save_bedrock(update: impl FnOnce(&mut ProviderDef)) -> Result<ProvidersConfig, String> {
+    let mut config = ProvidersConfig::load();
+    let mut def = config.get(BEDROCK_SLUG).cloned().unwrap_or_default();
+    update(&mut def);
+    config.upsert(BEDROCK_SLUG.to_string(), def);
+    config
+        .save()
+        .map_err(|e| format!("Error saving config: {e}"))?;
+    Ok(config)
 }
 
 fn step_modal(title: &str) -> Modal<'_> {

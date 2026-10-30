@@ -249,7 +249,7 @@ impl OpenAiCompatProvider {
             request = request.header(key, value);
         }
 
-        let request = request.body(json_body)?;
+        let request = auth.sign(request, &json_body).await?.body(json_body)?;
 
         debug!(
             model = %model.id,

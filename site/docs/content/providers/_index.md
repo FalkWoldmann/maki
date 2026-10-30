@@ -72,20 +72,42 @@ Defaults: claude-haiku-4-5 (weak), claude-sonnet-5 (medium), claude-opus-5 (stro
 
 Add `-1m` to any Claude model, like `claude-sonnet-4-6-1m`, to use the 1M token context window.
 
-#### Amazon Bedrock
+### Amazon Bedrock
 
-If you already use Claude through AWS Bedrock, you can point Maki at it instead of the direct Anthropic API. Set `CLAUDE_CODE_USE_BEDROCK=1` and Maki will route all Anthropic requests through Bedrock. The same models, the same features, just a different door.
+- **Env var**: `maki auth login bedrock` with AWS credentials or an API key, or Claude Code's env vars (see below)
+- **API endpoints**:
+  - `https://bedrock-runtime.<region>.amazonaws.com/anthropic/v1/messages`
+  - `https://bedrock-runtime.<region>.amazonaws.com/openai/v1/chat/completions`
+- **Features**: Claude over the Messages API, other vendors over Chat Completions, AWS credentials or Bedrock API keys
 
-You will need `AWS_REGION` and one of the following for auth:
+| Tier | Models | Pricing (in/out per 1M tokens) | Context |
+|------|--------|-------------------------------|---------|
+| Weak | **global.anthropic.claude-haiku-5-5** (default) | $0.10 / $0.50 | 1000K ctx / 128K out |
+| Medium | **global.anthropic.claude-sonnet-5-5** (default) | $2.00 / $10.00 | 1000K ctx / 128K out |
+| Strong | **global.anthropic.claude-opus-5-5** (default) | $4.00 / $20.00 | 1000K ctx / 128K out |
 
-| Method | Env vars |
-|--------|----------|
-| IAM credentials | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (and optionally `AWS_SESSION_TOKEN`) |
-| Credentials file | `AWS_PROFILE` (defaults to `default`), reads `~/.aws/credentials` |
-| Bearer token | `AWS_BEARER_TOKEN_BEDROCK` |
-| Gateway proxy | `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` + `ANTHROPIC_BEDROCK_BASE_URL` (skips signing, useful behind a proxy that handles auth) |
+Defaults: global.anthropic.claude-haiku-5-5 (weak), global.anthropic.claude-sonnet-5-5 (medium), global.anthropic.claude-opus-5-5 (strong)
 
-You can override the model with `ANTHROPIC_MODEL` and the endpoint with `ANTHROPIC_BEDROCK_BASE_URL`. These env var names match Claude Code, so if you were already using Bedrock there, the same setup works here.
+#### Setup
+
+Run `maki auth login bedrock`, or pick Amazon Bedrock in `/login`, and choose how to authenticate: your AWS credentials (a profile, SSO or the environment) or a Bedrock API key. Login asks for the region, and for AWS credentials an optional profile, and saves them under `[bedrock]` in `providers.toml`. Then pick a model with `/model` or `-m bedrock/<model id>`.
+
+The table lists the startup defaults. The picker lists every model models.dev knows on Bedrock that is reachable from your region: the cross-region profiles for your geography (`eu.`, `us.`, ...), the `global.` ones, and models served in your region directly.
+
+Claude models go to the Messages API at `https://bedrock-runtime.<region>.amazonaws.com/anthropic/v1/messages`, so only Claude Haiku 4.5, Opus 4.7 and newer work. Other vendors go to Chat Completions at `https://bedrock-runtime.<region>.amazonaws.com/openai/v1/chat/completions`. Models that take only the Converse API, such as Llama and Nova, are not listed.
+
+The region comes from `[bedrock] region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then your AWS profile, and falls back to `us-east-1`. Temporary AWS credentials are refreshed 5 minutes before they expire. After `aws sso login`, the next request picks up the new session.
+
+Claude Code's env vars work as well, without a login, and win over it:
+
+| Env var | Effect |
+|---------|--------|
+| `CLAUDE_CODE_USE_BEDROCK=1` | Turns Bedrock on with your AWS credentials |
+| `AWS_BEARER_TOKEN_BEDROCK` | Turns Bedrock on with this API key |
+| `CLAUDE_CODE_SKIP_BEDROCK_AUTH=1` | Sends requests unsigned, for a gateway that adds the credentials |
+| `ANTHROPIC_BEDROCK_BASE_URL` | Replaces `https://bedrock-runtime.<region>.amazonaws.com`, as `[bedrock] base_url` does |
+
+A gateway has to serve `/anthropic/v1/messages` and `/openai/v1/chat/completions`. Claude Code calls the InvokeModel API instead, so a gateway set up only for InvokeModel does not work here.
 
 ### OpenAI
 
@@ -429,6 +451,8 @@ supports_vision = false
 | `top_p` | f64 | Nucleus sampling probability, sent as `top_p` in the request body for OpenAI-compatible, Anthropic, Bedrock and Google providers. Claude and GPT models reject it while thinking is on, and Claude Opus 4.7, Claude 5 and later always do, so it is dropped there. Never sent to Copilot or over the OpenAI responses path. Only sent when set, so the provider's own default applies otherwise. Must be in `(0, 1]` |
 | `discover_models` | bool | When true, also probe the provider's model list endpoint (default false) |
 | `enable_free_models` | bool | Opencode only. Show free catalog models (default false) |
+| `region` | string | Bedrock only. AWS region, ahead of `AWS_REGION` |
+| `profile` | string | Bedrock only. AWS profile the credentials come from, ahead of `AWS_PROFILE` |
 | `subsidised_by` | string | Name of the flat subscription prepaying this provider (e.g. `"Max"`). Models bill $0 and show the published list price beside it as a reference. The list-price fallback needs `protocol = "anthropic"` |
 | `supports_deferred_tools` | bool | The endpoint can load a deferred MCP tool without rewriting the cached tools prefix (see [MCP](../mcp/#loads-and-the-prompt-cache)). True for Anthropic direct and Bedrock. A custom `protocol = "anthropic"` provider, or a built-in pointed at another `base_url`, defaults to false and opts in here |
 | `models` | array | Declared models for custom providers (see below) |
@@ -499,6 +523,9 @@ Maki sends `/v1` (or `/v1beta` for Gemini routes, nothing for Anthropic and Z.AI
 Some built-ins ship multiple plans (different base URLs or default models). `maki auth login <provider>` asks which plan to use when more than one exists. You can also set it in TOML:
 
 ```toml
+[bedrock]
+plan = "aws"
+
 [mistral]
 plan = "coding"
 
@@ -510,6 +537,8 @@ Current plans:
 
 | Provider | Plan | What it does |
 |----------|------|--------------|
+| Amazon Bedrock | `aws` | AWS credentials (profile, SSO, environment) at `https://bedrock-runtime.<region>.amazonaws.com` |
+| Amazon Bedrock | `api-key` | Bedrock API key at `https://bedrock-runtime.<region>.amazonaws.com` |
 | Mistral | `standard` | Standard at `https://api.mistral.ai/v1`, default `mistral/mistral-medium-latest` |
 | Mistral | `coding` | Vibe / Coding at `https://api.mistral.ai/v1`, default `mistral/mistral-vibe-cli-latest` |
 | Z.AI | `standard` | Pay-as-you-go at `https://api.z.ai/api/paas/v4`, default `zai/glm-5.1` |

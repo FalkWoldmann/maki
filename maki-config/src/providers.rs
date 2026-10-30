@@ -19,6 +19,11 @@ const PROVIDERS_FILE: &str = "providers.toml";
 const BAD_CONFIG_EXIT_CODE: i32 = 2;
 /// The only built-in that reads `enable_free_models`.
 const OPENCODE_SLUG: &str = "opencode";
+/// The only built-in that reads `region` and `profile`.
+pub const BEDROCK_SLUG: &str = "bedrock";
+/// Bedrock login methods, as `plan` keys.
+pub const BEDROCK_AWS_PLAN: &str = "aws";
+pub const BEDROCK_API_KEY_PLAN: &str = "api-key";
 const LOCAL_OVERLAY_SLUGS: [&str; 2] = ["ollama", "llama-cpp"];
 
 /// Where the last parse came from and what the file looked like then. The
@@ -357,6 +362,13 @@ pub struct ProviderDef {
     /// entirely. Defaults to `false` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_free_models: Option<bool>,
+    /// Bedrock-only: the AWS region, ahead of `AWS_REGION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Bedrock-only: the AWS profile credentials come from, ahead of
+    /// `AWS_PROFILE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Aperture-only: per-gateway-provider overrides for the routed native
     /// providers.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -598,7 +610,30 @@ pub fn ignored_builtin_fields(slug: &str, def: &ProviderDef) -> Vec<&'static str
     if def.enable_free_models.is_some() && slug != OPENCODE_SLUG {
         ignored.push("enable_free_models");
     }
+    if slug != BEDROCK_SLUG {
+        if def.region.is_some() {
+            ignored.push("region");
+        }
+        if def.profile.is_some() {
+            ignored.push("profile");
+        }
+    }
     ignored
+}
+
+/// What a Bedrock login offers as the region: the saved one, else the AWS
+/// env.
+pub fn bedrock_region_default(def: Option<&ProviderDef>) -> Option<String> {
+    def.and_then(|d| d.region.clone())
+        .or_else(|| std::env::var("AWS_REGION").ok())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+}
+
+/// What a Bedrock login offers as the AWS profile: the saved one, else
+/// `AWS_PROFILE`.
+pub fn bedrock_profile_default(def: Option<&ProviderDef>) -> Option<String> {
+    def.and_then(|d| d.profile.clone())
+        .or_else(|| std::env::var("AWS_PROFILE").ok())
 }
 
 pub fn resolve_protocol(slug: &str, def: Option<&ProviderDef>) -> Option<Protocol> {
@@ -986,6 +1021,20 @@ tier = "{input}"
         assert_eq!(
             ignored_builtin_fields("openrouter", &def),
             ["enable_free_models"]
+        );
+    }
+
+    #[test]
+    fn ignored_builtin_fields_keeps_bedrock_region_and_profile() {
+        let def = ProviderDef {
+            region: Some("eu-west-1".into()),
+            profile: Some("work".into()),
+            ..Default::default()
+        };
+        assert!(ignored_builtin_fields(BEDROCK_SLUG, &def).is_empty());
+        assert_eq!(
+            ignored_builtin_fields("anthropic", &def),
+            ["region", "profile"]
         );
     }
 

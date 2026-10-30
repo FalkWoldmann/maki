@@ -29,6 +29,9 @@ const NETWORK_ERROR_MESSAGE: &str = "connection error, check your network";
 const THINKING_UNBOUND: &str = "bound to a different conversation";
 const UNREADABLE_BODY_MESSAGE: &str = "unable to read error body";
 const RETRY_AFTER_HEADER: &str = "retry-after";
+/// What Bedrock's OpenAI-compatible route types an IAM or SCP deny as, on a
+/// 401. Logging in again cannot lift a policy.
+const PERMISSION_DENIED_TYPE: &str = "permission_denied_error";
 /// The request field a server names when it refuses reasoning summaries. Every
 /// Responses implementation spells the rejection with a different `code`, so
 /// the field is the only stable part of the answer.
@@ -322,7 +325,7 @@ impl AgentError {
         else {
             return None;
         };
-        opencode::non_login_error(*status, message)
+        opencode::non_login_error(*status, message).or_else(|| permission_denied(*status, message))
     }
 
     /// A plan quota that resets on a weekly or monthly boundary: retrying just
@@ -506,6 +509,20 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     }
 }
 
+fn permission_denied(status: u16, body: &str) -> Option<NonLoginError> {
+    if status != 401 {
+        return None;
+    }
+    let body: Value = serde_json::from_str(body).ok()?;
+    if body.pointer("/error/type")?.as_str()? != PERMISSION_DENIED_TYPE {
+        return None;
+    }
+    Some(NonLoginError {
+        message: body.pointer("/error/message")?.as_str()?.to_owned(),
+        is_quota: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashSet, mem::discriminant};
@@ -636,6 +653,18 @@ mod tests {
 
         assert!(!err.is_auth_error());
         assert_eq!(err.user_message(), expected);
+    }
+
+    const POLICY_DENIED_MESSAGE: &str = "User: arn:aws:sts::1:assumed-role/dev/me is not authorized to perform: bedrock:InvokeModel with an explicit deny in a service control policy";
+
+    #[test]
+    fn bedrock_policy_deny_is_not_a_login_problem() {
+        let body = json!({"error": {"message": POLICY_DENIED_MESSAGE, "type": PERMISSION_DENIED_TYPE, "code": "access_denied"}});
+        let err = api_msg(401, &body.to_string());
+
+        assert!(!err.is_auth_error());
+        assert!(!err.is_retryable());
+        assert_eq!(err.user_message(), POLICY_DENIED_MESSAGE);
     }
 
     #[test_case(r#"{"error":{"type":"AuthError","message":"Invalid API key"}}"# ; "auth_error")]
