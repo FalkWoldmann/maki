@@ -1,11 +1,18 @@
 use std::env;
+use std::fmt::Display;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
+use std::pin::pin;
+use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use aws_smithy_eventstream::frame::{DecodedFrame, MessageFrameDecoder};
+use aws_smithy_eventstream::smithy::parse_response_headers;
+use aws_smithy_types::event_stream::Message as FrameMessage;
 use base64::Engine;
 use flume::Sender;
+use futures::{Stream, StreamExt, TryStreamExt};
 use hmac::{Hmac, KeyInit, Mac};
 use maki_storage::id::SessionRef;
 use reqwest::Client;
@@ -23,18 +30,15 @@ use super::shared;
 pub(crate) const BEARER_TOKEN_ENV: &str = "AWS_BEARER_TOKEN_BEDROCK";
 const CONTAINER_CREDENTIALS_URI_ENV: &str = "AWS_CONTAINER_CREDENTIALS_FULL_URI";
 const BEDROCK_API_VERSION: &str = "bedrock-2023-05-31";
-const MIN_EVENTSTREAM_FRAME: usize = 16;
+const MESSAGE_TYPE_EVENT: &str = "event";
+const CHUNK_EVENT: &str = "chunk";
+const THROTTLING_EXCEPTION: &str = "throttlingException";
+const VALIDATION_EXCEPTION: &str = "validationException";
+const TRUNCATED_STREAM: &str = "the event stream ended inside a frame";
 const CONTAINER_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 const CONTAINER_CREDENTIALS_PENDING: &str =
     "Bedrock container credentials were not fetched before signing the request";
-
-fn io_error(
-    kind: std::io::ErrorKind,
-    e: impl Into<Box<dyn std::error::Error + Send + Sync>>,
-) -> AgentError {
-    AgentError::Io(std::io::Error::new(kind, e))
-}
 
 #[derive(Clone)]
 enum AuthKind {
@@ -401,93 +405,83 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn decode_eventstream_frame(buf: &[u8]) -> Result<(usize, Option<Vec<u8>>), AgentError> {
-    if buf.len() < MIN_EVENTSTREAM_FRAME {
-        return Err(io_error(
-            std::io::ErrorKind::UnexpectedEof,
-            "eventstream frame too short",
-        ));
+/// A stream nothing here can read, which trying again won't change: a gateway's
+/// login page on a 200 fails exactly the same way every time.
+fn malformed_stream(e: impl Display) -> AgentError {
+    AgentError::Config {
+        message: format!("Bedrock sent a malformed event stream: {e}"),
     }
+}
 
-    let total_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    let headers_len = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
-
-    if buf.len() < total_len {
-        return Err(io_error(
-            std::io::ErrorKind::UnexpectedEof,
-            "incomplete eventstream frame",
-        ));
-    }
-
-    let prelude_size = 12; // total_len(4) + headers_len(4) + prelude_crc(4)
-    let message_crc_size = 4;
-    let headers_end = prelude_size + headers_len;
-    let payload_end = total_len - message_crc_size;
-
-    let headers_bytes = &buf[prelude_size..headers_end];
-    let payload_bytes = &buf[headers_end..payload_end];
-
-    let mut event_type = None;
-    let mut exception_type = None;
-    let mut pos = 0;
-
-    while pos < headers_bytes.len() {
-        let name_len = headers_bytes[pos] as usize;
-        pos += 1;
-        if pos + name_len > headers_bytes.len() {
-            break;
-        }
-        let name = std::str::from_utf8(&headers_bytes[pos..pos + name_len]).unwrap_or("");
-        pos += name_len;
-
-        if pos >= headers_bytes.len() {
-            break;
-        }
-        let header_type = headers_bytes[pos];
-        pos += 1;
-
-        if header_type == 7 {
-            if pos + 2 > headers_bytes.len() {
-                break;
-            }
-            let value_len =
-                u16::from_be_bytes([headers_bytes[pos], headers_bytes[pos + 1]]) as usize;
-            pos += 2;
-            if pos + value_len > headers_bytes.len() {
-                break;
-            }
-            let value = std::str::from_utf8(&headers_bytes[pos..pos + value_len]).unwrap_or("");
-            pos += value_len;
-
-            match name {
-                ":event-type" => event_type = Some(value.to_string()),
-                ":exception-type" => exception_type = Some(value.to_string()),
-                _ => {}
-            }
-        } else {
-            break;
-        }
-    }
-
-    if let Some(exc) = exception_type {
-        let message = std::str::from_utf8(payload_bytes)
-            .unwrap_or("unknown error")
-            .to_string();
-        let status = match exc.as_str() {
-            "ThrottlingException" => 429,
-            "ValidationException" => 400,
-            _ => 500,
-        };
-        return Err(AgentError::api(status, message));
-    }
-
-    let payload = if event_type.as_deref() == Some("chunk") && !payload_bytes.is_empty() {
-        Some(payload_bytes.to_vec())
+fn exception_status(name: &str) -> u16 {
+    if name.eq_ignore_ascii_case(THROTTLING_EXCEPTION) {
+        429
+    } else if name.eq_ignore_ascii_case(VALIDATION_EXCEPTION) {
+        400
     } else {
-        None
-    };
+        500
+    }
+}
 
-    Ok((total_len, payload))
+/// The payload of a chunk event, nothing for any other event, or the error an
+/// exception frame carries.
+fn chunk_payload(message: &FrameMessage) -> Result<Option<&[u8]>, AgentError> {
+    let headers = parse_response_headers(message).map_err(malformed_stream)?;
+    let name = headers.smithy_type.as_str();
+    if headers.message_type.as_str() == MESSAGE_TYPE_EVENT {
+        let payload = &message.payload()[..];
+        return Ok((name == CHUNK_EVENT && !payload.is_empty()).then_some(payload));
+    }
+    Err(AgentError::api(
+        exception_status(name),
+        String::from_utf8_lossy(message.payload()),
+    ))
+}
+
+/// The decoder keeps a prelude it has read, so a stream ending mid-frame can leave
+/// the buffer empty while half a message is still pending: `mid_frame` tracks that.
+/// A dropped connection surfaces as an error from `chunks` and is retried. A body
+/// that ends cleanly mid-frame isn't, because the decoder only checks CRCs on a
+/// whole frame, so this is also what a gateway's login page on a 200 looks like.
+async fn read_events<B: AsRef<[u8]>>(
+    chunks: impl Stream<Item = Result<B, AgentError>>,
+    event_tx: &Sender<ProviderEvent>,
+) -> Result<StreamResponse, AgentError> {
+    let mut chunks = pin!(chunks);
+    let mut parser = shared::EventParser::new();
+    let mut decoder = MessageFrameDecoder::new();
+    let mut frame_buf = Vec::new();
+    let mut mid_frame = false;
+
+    while let Some(chunk) = chunks.next().await {
+        frame_buf.extend_from_slice(chunk?.as_ref());
+        let mut unread = &frame_buf[..];
+        loop {
+            let before = unread.len();
+            let DecodedFrame::Complete(message) = decoder
+                .decode_frame(&mut unread)
+                .map_err(malformed_stream)?
+            else {
+                mid_frame |= unread.len() < before;
+                break;
+            };
+            mid_frame = false;
+            let Some(payload) = chunk_payload(&message)? else {
+                continue;
+            };
+            let (event_type, json) = decode_event_payload(payload)?;
+            if let ControlFlow::Break(()) = parser.process(&event_type, &json, event_tx).await? {
+                return Ok(parser.finish());
+            }
+        }
+        let consumed = frame_buf.len() - unread.len();
+        frame_buf.drain(..consumed);
+    }
+
+    if mid_frame || !frame_buf.is_empty() {
+        return Err(malformed_stream(TRUNCATED_STREAM));
+    }
+    Ok(parser.finish())
 }
 
 pub(crate) struct Bedrock {
@@ -648,47 +642,13 @@ impl Provider for Bedrock {
 
             debug!(model = %model_id, region = %auth.region, "sending Bedrock request");
 
-            let mut response = self.client.execute(request).await?;
+            let response = self.client.execute(request).await?;
             let status = response.status().as_u16();
             if status != 200 {
                 return Err(AgentError::from_response(response).await);
             }
 
-            let mut parser = shared::EventParser::new();
-            let mut frame_buf = Vec::new();
-
-            while let Some(chunk) = response.chunk().await? {
-                frame_buf.extend_from_slice(&chunk);
-
-                while frame_buf.len() >= MIN_EVENTSTREAM_FRAME {
-                    let peek_total = u32::from_be_bytes([
-                        frame_buf[0],
-                        frame_buf[1],
-                        frame_buf[2],
-                        frame_buf[3],
-                    ]) as usize;
-                    if frame_buf.len() < peek_total {
-                        break;
-                    }
-
-                    let (consumed, payload) = decode_eventstream_frame(&frame_buf)?;
-                    frame_buf.drain(..consumed);
-
-                    let Some(payload) = payload else {
-                        continue;
-                    };
-
-                    let (event_type, json) = decode_event_payload(&payload)?;
-
-                    if let ControlFlow::Break(()) =
-                        parser.process(&event_type, &json, event_tx).await?
-                    {
-                        return Ok(parser.finish());
-                    }
-                }
-            }
-
-            Ok(parser.finish())
+            read_events(response.bytes_stream().map_err(AgentError::from), event_tx).await
         })
     }
 
@@ -714,16 +674,14 @@ impl Provider for Bedrock {
 }
 
 fn decode_event_payload(payload: &[u8]) -> Result<(String, String), AgentError> {
-    let json_str =
-        std::str::from_utf8(payload).map_err(|e| io_error(std::io::ErrorKind::InvalidData, e))?;
+    let json_str = str::from_utf8(payload).map_err(malformed_stream)?;
     let outer: Value = serde_json::from_str(json_str)?;
 
     let (parsed, json) = if let Some(b64) = outer.get("bytes").and_then(|b| b.as_str()) {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .map_err(|e| io_error(std::io::ErrorKind::InvalidData, e))?;
-        let json =
-            String::from_utf8(decoded).map_err(|e| io_error(std::io::ErrorKind::InvalidData, e))?;
+            .map_err(malformed_stream)?;
+        let json = String::from_utf8(decoded).map_err(malformed_stream)?;
         let parsed: Value = serde_json::from_str(&json)?;
         (parsed, json)
     } else {
@@ -771,9 +729,27 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
 
 #[cfg(test)]
 mod tests {
+    use aws_smithy_eventstream::frame::write_message_to;
+    use aws_smithy_types::event_stream::{Header, HeaderValue};
+    use futures::stream::iter;
+
     use super::*;
     use crate::{ContentBlock, ProviderEvent};
     use test_case::test_case;
+
+    const MESSAGE_START: &str =
+        r#"{"type":"message_start","message":{"usage":{"input_tokens":10}}}"#;
+    const TEXT_BLOCK_START: &str =
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
+    const TEXT_DELTA: &str =
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
+    const MESSAGE_STOP: &str = r#"{"type":"message_stop"}"#;
+    const STREAMED_TEXT: &str = "Hello";
+    const EXCEPTION_MESSAGE: &str = r#"{"message":"Rate exceeded"}"#;
+    const TOO_LONG_MESSAGE: &str = r#"{"message":"Input is too long for requested model."}"#;
+    const LOGIN_PAGE: &str =
+        "<html><body>Sign in to continue, this page is long enough</body></html>";
+    const BAD_BASE64: &[u8] = br#"{"bytes":"not base64!"}"#;
 
     #[test]
     fn sigv4_signing_encodes_path_segments() {
@@ -848,59 +824,150 @@ mod tests {
         );
     }
 
-    fn build_eventstream_frame(header_name: &str, header_value: &str, payload: &[u8]) -> Vec<u8> {
-        let mut header_buf = Vec::new();
-        header_buf.push(header_name.len() as u8);
-        header_buf.extend_from_slice(header_name.as_bytes());
-        header_buf.push(7);
-        header_buf.extend_from_slice(&(header_value.len() as u16).to_be_bytes());
-        header_buf.extend_from_slice(header_value.as_bytes());
-
-        let headers_len = header_buf.len() as u32;
-        let total_len = 12 + headers_len + payload.len() as u32 + 4;
-
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&total_len.to_be_bytes());
-        frame.extend_from_slice(&headers_len.to_be_bytes());
-        frame.extend_from_slice(&0u32.to_be_bytes());
-        frame.extend_from_slice(&header_buf);
-        frame.extend_from_slice(payload);
-        frame.extend_from_slice(&0u32.to_be_bytes());
-        frame
+    fn frame(headers: &[(&'static str, &'static str)], payload: &[u8]) -> Vec<u8> {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| Header::new(*name, HeaderValue::String((*value).into())))
+            .collect();
+        let mut wire = Vec::new();
+        write_message_to(
+            &FrameMessage::new_from_parts(headers, payload.to_vec()),
+            &mut wire,
+        )
+        .unwrap();
+        wire
     }
 
-    #[test]
-    fn decode_eventstream_chunk_returns_payload() {
-        let payload = b"{\"type\":\"content_block_delta\"}";
-        let frame = build_eventstream_frame(":event-type", "chunk", payload);
-        let (consumed, data) = decode_eventstream_frame(&frame).unwrap();
-        assert_eq!(consumed, frame.len());
-        assert_eq!(data.unwrap(), payload);
+    fn event(name: &'static str, payload: &[u8]) -> Vec<u8> {
+        frame(
+            &[(":message-type", "event"), (":event-type", name)],
+            payload,
+        )
     }
 
-    #[test]
-    fn decode_eventstream_metadata_returns_none() {
-        let frame = build_eventstream_frame(":event-type", "initial-response", b"");
-        let (consumed, data) = decode_eventstream_frame(&frame).unwrap();
-        assert_eq!(consumed, frame.len());
-        assert!(data.is_none());
+    fn exception(name: &'static str, message: &str) -> Vec<u8> {
+        frame(
+            &[(":message-type", "exception"), (":exception-type", name)],
+            message.as_bytes(),
+        )
     }
 
-    #[test_case("ValidationException", 400, "Access denied" ; "validation_exception")]
-    #[test_case("ThrottlingException", 429, "Rate exceeded" ; "throttling_exception")]
-    #[test_case("UnknownException", 500, "oops" ; "unknown_maps_to_500")]
-    fn decode_eventstream_exception(exc_type: &str, expected_status: u16, msg: &str) {
-        let frame = build_eventstream_frame(":exception-type", exc_type, msg.as_bytes());
-        let err = decode_eventstream_frame(&frame).unwrap_err();
-        match err {
-            AgentError::Api {
-                status, message, ..
-            } => {
-                assert_eq!(status, expected_status);
-                assert_eq!(message, msg);
-            }
-            other => panic!("expected Api error, got: {other:?}"),
+    fn chunk(json: &str) -> Vec<u8> {
+        let wrapped = json!({
+            "bytes": base64::engine::general_purpose::STANDARD.encode(json),
+        });
+        event(CHUNK_EVENT, wrapped.to_string().as_bytes())
+    }
+
+    fn text_stream() -> Vec<u8> {
+        [MESSAGE_START, TEXT_BLOCK_START, TEXT_DELTA, MESSAGE_STOP]
+            .map(chunk)
+            .concat()
+    }
+
+    async fn read_all(parts: Vec<Vec<u8>>) -> Result<StreamResponse, AgentError> {
+        let (tx, _rx) = flume::unbounded();
+        read_events(iter(parts.into_iter().map(Ok)), &tx).await
+    }
+
+    fn response_text(response: &StreamResponse) -> &str {
+        match &response.message.content[0] {
+            ContentBlock::Text { text } => text,
+            other => panic!("expected text, got: {other:?}"),
         }
+    }
+
+    #[test_case(1 ; "split_byte_by_byte")]
+    #[test_case(7 ; "split_inside_the_prelude")]
+    #[test_case(usize::MAX ; "one_read")]
+    #[tokio::test]
+    async fn frames_decode_however_the_reads_split_them(read_size: usize) {
+        let wire = text_stream();
+        let parts = wire.chunks(read_size).map(<[u8]>::to_vec).collect();
+        let response = read_all(parts).await.unwrap();
+        assert_eq!(response_text(&response), STREAMED_TEXT);
+    }
+
+    #[tokio::test]
+    async fn other_events_and_empty_chunks_are_skipped() {
+        let wire = [
+            event("initial-response", b""),
+            event(CHUNK_EVENT, b""),
+            text_stream(),
+        ]
+        .concat();
+        let response = read_all(vec![wire]).await.unwrap();
+        assert_eq!(response_text(&response), STREAMED_TEXT);
+    }
+
+    #[test_case("throttlingException", 429 ; "throttling")]
+    #[test_case("validationException", 400 ; "validation")]
+    #[test_case("ThrottlingException", 429 ; "throttling_in_pascal_case")]
+    #[test_case("ValidationException", 400 ; "validation_in_pascal_case")]
+    #[test_case("serviceUnavailableException", 500 ; "anything_else_stays_retryable")]
+    #[tokio::test]
+    async fn exception_frames_keep_their_status(name: &'static str, expected: u16) {
+        let error = read_all(vec![exception(name, EXCEPTION_MESSAGE)])
+            .await
+            .unwrap_err();
+        let AgentError::Api {
+            status, message, ..
+        } = error
+        else {
+            panic!("expected Api error, got: {error:?}");
+        };
+        assert_eq!(status, expected);
+        assert_eq!(message, EXCEPTION_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn a_too_long_prompt_mid_stream_reads_as_overflow() {
+        let error = read_all(vec![exception("validationException", TOO_LONG_MESSAGE)])
+            .await
+            .unwrap_err();
+        assert!(error.is_context_overflow(), "{error:?}");
+    }
+
+    #[test_case(vec![0; 16] ; "zero_length_frame")]
+    #[test_case(LOGIN_PAGE.as_bytes().to_vec() ; "login_page_on_a_200")]
+    #[test_case(frame(&[(":event-type", CHUNK_EVENT)], b"{}") ; "no_message_type")]
+    #[test_case(frame(&[(":message-type", "error")], b"") ; "framework_error")]
+    #[test_case(event(CHUNK_EVENT, BAD_BASE64) ; "payload_is_not_base64")]
+    #[tokio::test]
+    async fn a_malformed_stream_fails_without_retrying(wire: Vec<u8>) {
+        let error = read_all(vec![wire]).await.unwrap_err();
+        assert!(!error.is_retryable(), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_stays_retryable() {
+        let (tx, _rx) = flume::unbounded();
+        let parts: Vec<Result<Vec<u8>, AgentError>> = vec![
+            Ok(chunk(MESSAGE_START)),
+            Err(AgentError::Io(std::io::ErrorKind::ConnectionReset.into())),
+        ];
+        let error = read_events(iter(parts), &tx).await.unwrap_err();
+        assert!(error.is_retryable(), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_corrupted_frame_is_rejected() {
+        let mut wire = text_stream();
+        let last = wire.len() - 1;
+        wire[last] ^= 1;
+        let error = read_all(vec![wire]).await.unwrap_err();
+        assert!(!error.is_retryable(), "{error:?}");
+    }
+
+    #[test_case(5 ; "inside_the_prelude")]
+    #[test_case(12 ; "right_after_the_prelude")]
+    #[test_case(20 ; "after_the_prelude")]
+    #[tokio::test]
+    async fn a_body_ending_mid_frame_fails_without_retrying(kept: usize) {
+        let wire = [chunk(MESSAGE_START), chunk(MESSAGE_START)[..kept].to_vec()].concat();
+        let error = read_all(vec![wire]).await.unwrap_err();
+        assert!(!error.is_retryable(), "{error:?}");
+        assert!(error.to_string().contains(TRUNCATED_STREAM), "{error:?}");
     }
 
     #[test_case("default", "AKID", "SECRET", None ; "default_profile")]

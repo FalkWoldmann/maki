@@ -25,6 +25,8 @@ base64 = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+aws-smithy-eventstream = { workspace = true }
+aws-smithy-types = { workspace = true }
 fastrand = { workspace = true }
 maki-config = { workspace = true }
 inventory = { workspace = true }
