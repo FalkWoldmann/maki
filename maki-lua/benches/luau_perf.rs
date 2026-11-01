@@ -4,7 +4,11 @@
 //! - `mlua_hook`: mlua `set_interrupt` closure, fires at every safepoint
 //!   (what the runtime used before the watchdog)
 //! - `watchdog`: no resident interrupt; a thread arms a one-shot native
-//!   interrupt every 10ms (what the runtime uses now)
+//!   interrupt every 50ms (what the runtime uses now)
+//! - `raw_countdown`: a resident native interrupt that counts safepoints and
+//!   reads the flag and the clock every 128th one, with none of mlua's
+//!   per-call wrapper (what `set_interrupt` could cost if mlua throttled
+//!   before its wrapper)
 //! - `none`: no cancellation at all (upper bound)
 
 use std::cell::Cell;
@@ -13,7 +17,7 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use mlua::chunk::Compiler;
@@ -22,7 +26,7 @@ use mlua::{Function, Lua, Table, VmState, ffi};
 const MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 const OPT_LEVEL: u8 = 2;
 const HOOK_CHECK_INTERVAL: u32 = 128;
-const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 const FIB: &str = "\
     local function fib(n)\n\
@@ -49,7 +53,42 @@ const BUILTIN_LOOP: &str = "\
 enum Cancellation {
     MluaHook,
     Watchdog,
+    RawCountdown,
     None,
+}
+
+static RAW_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static RAW_TICK: Cell<u32> = const { Cell::new(0) };
+    static RAW_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Resident at every safepoint: a thread-local countdown, and on every
+/// `HOOK_CHECK_INTERVAL`th call the shutdown flag and the deadline clock,
+/// which is what the runtime's kill conditions need.
+unsafe extern "C-unwind" fn countdown_interrupt(state: *mut ffi::lua_State, gc: c_int) {
+    if gc >= 0 {
+        return;
+    }
+    let tick = RAW_TICK.with(|t| {
+        let next = t.get().wrapping_add(1);
+        t.set(next);
+        next
+    });
+    if !tick.is_multiple_of(HOOK_CHECK_INTERVAL) {
+        return;
+    }
+    let due = RAW_DEADLINE.with(|d| d.get().is_some_and(|at| Instant::now() >= at));
+    if RAW_SHUTDOWN.load(Ordering::Relaxed) || due {
+        unsafe {
+            if ffi::lua_checkstack(state, 1) == 0 {
+                return;
+            }
+            ffi::lua_pushstring(state, c"shutdown".as_ptr());
+            ffi::lua_error(state);
+        }
+    }
 }
 
 struct WatchdogGuard {
@@ -130,6 +169,13 @@ fn runtime_like_lua(jit: bool, cancellation: Cancellation) -> (Lua, Option<Watch
             None
         }
         Cancellation::Watchdog => Some(spawn_watchdog(&lua)),
+        Cancellation::RawCountdown => {
+            RAW_DEADLINE.with(|d| d.set(Some(Instant::now() + Duration::from_secs(3600))));
+            let main_state =
+                lua.exec_raw_lua(|raw| unsafe { ffi::lua_mainthread(raw.state()) }) as usize;
+            store_interrupt(main_state as *mut ffi::lua_State, Some(countdown_interrupt));
+            None
+        }
         Cancellation::None => None,
     };
     (lua, guard)
@@ -157,9 +203,11 @@ fn bench_source(c: &mut Criterion, group: &str, src: &'static str) {
     for (label, jit, cancellation) in [
         ("jit_mlua_hook", true, Cancellation::MluaHook),
         ("jit_watchdog", true, Cancellation::Watchdog),
+        ("jit_raw_countdown", true, Cancellation::RawCountdown),
         ("jit_none", true, Cancellation::None),
         ("interp_mlua_hook", false, Cancellation::MluaHook),
         ("interp_watchdog", false, Cancellation::Watchdog),
+        ("interp_raw_countdown", false, Cancellation::RawCountdown),
         ("interp_none", false, Cancellation::None),
     ] {
         let (lua, _guard) = runtime_like_lua(jit, cancellation);
