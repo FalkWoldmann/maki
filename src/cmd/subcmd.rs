@@ -33,6 +33,14 @@ const FROM_ENV: &str = "\x1b[33m~\x1b[0m";
 const UNCONFIGURED: &str = " ";
 const PLAN_PREVIEW_PATH: &str = "plan.md";
 
+fn read_choice(max: usize) -> Result<usize> {
+    print!("  Select [1-{max}]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    input.trim().parse().context("enter a number")
+}
+
 pub async fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
     match provider {
         Some("openai") => openai_auth::login(storage).await?,
@@ -225,11 +233,7 @@ async fn login_interactive(storage: &StateDir) -> Result<()> {
     println!("    {}. Custom provider...", custom_idx);
     println!();
 
-    print!("  Select [1-{}]: ", custom_idx);
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let choice: usize = input.trim().parse().context("enter a number")?;
+    let choice = read_choice(custom_idx)?;
 
     if choice == custom_idx {
         return login_custom(storage);
@@ -401,11 +405,7 @@ fn select_plan(
         println!("    {}. {} ({})", i + 1, plan.display_name, plan.base_url);
     }
     println!();
-    print!("  Select [1-{}]: ", plans.len());
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let choice: usize = input.trim().parse().context("enter a number")?;
+    let choice = read_choice(plans.len())?;
     if choice == 0 || choice > plans.len() {
         bail!("invalid plan selection");
     }

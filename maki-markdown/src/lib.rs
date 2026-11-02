@@ -621,16 +621,16 @@ fn find_code_span_close(bytes: &[u8], pos: usize, run_len: usize) -> Option<(usi
     None
 }
 
+fn skip_code_span(bytes: &[u8], pos: usize) -> usize {
+    let run = count_backtick_run(bytes, pos);
+    find_code_span_close(bytes, pos, run).map_or(pos + run, |(_, _, close_end)| close_end)
+}
+
 fn find_emphasis_close(bytes: &[u8], start: usize, delim: &[u8]) -> Option<usize> {
     let mut pos = start;
     while pos + delim.len() <= bytes.len() {
         if bytes[pos] == b'`' {
-            let run = count_backtick_run(bytes, pos);
-            if let Some((_, _, close_end)) = find_code_span_close(bytes, pos, run) {
-                pos = close_end;
-            } else {
-                pos += run;
-            }
+            pos = skip_code_span(bytes, pos);
             continue;
         }
         if bytes[pos..].starts_with(delim) {
@@ -649,12 +649,7 @@ fn find_italic_close(bytes: &[u8], start: usize, ch: u8) -> Option<usize> {
     let mut pos = start;
     while pos < bytes.len() {
         if bytes[pos] == b'`' {
-            let run = count_backtick_run(bytes, pos);
-            if let Some((_, _, close_end)) = find_code_span_close(bytes, pos, run) {
-                pos = close_end;
-            } else {
-                pos += run;
-            }
+            pos = skip_code_span(bytes, pos);
             continue;
         }
         if bytes[pos] == ch {
@@ -713,12 +708,7 @@ fn find_strike_close(bytes: &[u8], start: usize) -> Option<usize> {
     let mut pos = start;
     while pos + 1 < bytes.len() {
         if bytes[pos] == b'`' {
-            let run = count_backtick_run(bytes, pos);
-            if let Some((_, _, close_end)) = find_code_span_close(bytes, pos, run) {
-                pos = close_end;
-            } else {
-                pos += run;
-            }
+            pos = skip_code_span(bytes, pos);
             continue;
         }
         if bytes[pos] == b'~' && bytes[pos + 1] == b'~' {

@@ -1,6 +1,6 @@
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 
-use super::callback::{CallbackResult, parse_query};
+use super::callback::{CallbackResult, oauth_error, parse_query};
 
 const PASTE_HINT: &str = "Paste the full redirect URL (or its query string with code= and state=):";
 const MISSING_PARAMS: &str = "missing code or state parameter";
@@ -41,13 +41,8 @@ enum Outcome {
 fn parse_pasted(input: &str, expected_state: &str) -> Result<Outcome, String> {
     let params = parse_query(extract_query(input));
 
-    if let Some((_, error)) = params.iter().find(|(k, _)| k == "error") {
-        let desc = params
-            .iter()
-            .find(|(k, _)| k == "error_description")
-            .map(|(_, v)| v.as_str())
-            .unwrap_or(error);
-        return Err(format!("OAuth error: {desc}"));
+    if let Some(error) = oauth_error(&params) {
+        return Err(error);
     }
 
     let state = params

@@ -1,3 +1,5 @@
+local frontmatter = require("maki.frontmatter")
+
 local M = {}
 
 M.MAX_TAGS = 50
@@ -218,20 +220,7 @@ local function combine_unreadable(warnings)
   return UNREADABLE_PREFIX .. table.concat(warnings, ", ")
 end
 
-function M.parse_frontmatter(content)
-  local rest = content:match("^%s*%-%-%-\n(.*)")
-  if not rest then
-    return {}, content
-  end
-  local end_pos = rest:find("\n%-%-%-")
-  if not end_pos then
-    return {}, content
-  end
-  local yaml_str = rest:sub(1, end_pos)
-  local body = rest:sub(end_pos + 4):match("^%s*(.-)%s*$")
-  local fm = maki.yaml.decode(yaml_str) or {}
-  return fm, body
-end
+M.parse_frontmatter = frontmatter.parse
 
 function M.extract_tags(frontmatter)
   if type(frontmatter) ~= "table" then

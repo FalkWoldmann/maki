@@ -1,25 +1,11 @@
+local frontmatter = require("maki.frontmatter")
+
 local LINE_FMT = "%4d | %s"
 local LINE_PAT = "^%s*%d+ | (.*)$"
 
 local M = {}
 
-function M.parse_frontmatter(content)
-  local rest = content:match("^%s*%-%-%-\n(.*)")
-  if not rest then
-    return {}, content
-  end
-  local end_pos = rest:find("\n%-%-%-")
-  if not end_pos then
-    return {}, content
-  end
-  local yaml_str = rest:sub(1, end_pos)
-  local body = rest:sub(end_pos + 4):match("^%s*(.-)%s*$")
-  local fm, _ = maki.yaml.decode(yaml_str)
-  if not fm then
-    fm = {}
-  end
-  return fm, body
-end
+M.parse_frontmatter = frontmatter.parse
 
 function M.build_skill_list(skills)
   local sorted = {}

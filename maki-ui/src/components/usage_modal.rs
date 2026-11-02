@@ -270,25 +270,35 @@ fn model_col_width(names: impl IntoIterator<Item = impl AsRef<str>>) -> usize {
 }
 
 fn header_row(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
-    let h = |label: &str| Span::styled(format!("{label:>NUM_COL$}"), theme.status_dim);
+    table_header(
+        model_w,
+        theme,
+        &["in", "out", "cache", "total"],
+        format!("{:>6}", "cost"),
+    )
+}
+
+fn table_header(
+    model_w: usize,
+    theme: &crate::theme::Theme,
+    number_columns: &[&str],
+    last_column: String,
+) -> Vec<Span<'static>> {
     let gap = || Span::raw(" ".repeat(COL_GAP));
-    vec![
+    let mut spans = vec![
         Span::raw(PREFIX),
         Span::styled(
             format!("{:width$}", "model", width = model_w),
             theme.status_dim,
         ),
-        gap(),
-        h("in"),
-        gap(),
-        h("out"),
-        gap(),
-        h("cache"),
-        gap(),
-        h("total"),
-        gap(),
-        Span::styled(format!("{:>6}", "cost"), theme.status_dim),
-    ]
+    ];
+    for label in number_columns {
+        spans.push(gap());
+        spans.push(Span::styled(format!("{label:>NUM_COL$}"), theme.status_dim));
+    }
+    spans.push(gap());
+    spans.push(Span::styled(last_column, theme.status_dim));
+    spans
 }
 
 fn provider_usage(state: &UsageFetchState) -> Option<&ProviderUsage> {
@@ -300,23 +310,12 @@ fn provider_usage(state: &UsageFetchState) -> Option<&ProviderUsage> {
 }
 
 fn provider_by_model_header(model_w: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
-    let h = |label: &str| Span::styled(format!("{label:>NUM_COL$}"), theme.status_dim);
-    let gap = || Span::raw(" ".repeat(COL_GAP));
-    vec![
-        Span::raw(PREFIX),
-        Span::styled(
-            format!("{:width$}", "model", width = model_w),
-            theme.status_dim,
-        ),
-        gap(),
-        h("in"),
-        gap(),
-        h("out"),
-        gap(),
-        h("total"),
-        gap(),
-        Span::styled(format!("{:>7}", "spend"), theme.status_dim),
-    ]
+    table_header(
+        model_w,
+        theme,
+        &["in", "out", "total"],
+        format!("{:>7}", "spend"),
+    )
 }
 
 fn provider_by_model_row(row: &ModelUsageRow, model_w: usize, fg: Style) -> Vec<Span<'static>> {

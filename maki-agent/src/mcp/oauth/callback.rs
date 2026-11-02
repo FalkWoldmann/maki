@@ -171,14 +171,9 @@ impl CallbackServer {
             return None;
         }
 
-        if let Some(error) = params.iter().find(|(k, _)| k == "error") {
-            let desc = params
-                .iter()
-                .find(|(k, _)| k == "error_description")
-                .map(|(_, v)| v.as_str())
-                .unwrap_or(&error.1);
+        if let Some(error) = oauth_error(&params) {
             let _ = respond(&mut stream, 400, ERROR_HTML).await;
-            return Some(Err(format!("OAuth error: {desc}")));
+            return Some(Err(error));
         }
 
         let Some(code) = params
@@ -215,6 +210,13 @@ fn tls_acceptor(certified: CertifiedKey<KeyPair>) -> Result<TlsAcceptor, String>
         })
         .map_err(|e| format!("failed to configure callback TLS: {e}"))?;
     Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+pub(crate) fn oauth_error(params: &[(String, String)]) -> Option<String> {
+    let param = |name| params.iter().find(|(k, _)| k == name).map(|(_, v)| v);
+    let error = param("error")?;
+    let desc = param("error_description").unwrap_or(error);
+    Some(format!("OAuth error: {desc}"))
 }
 
 pub(crate) fn parse_query(query: &str) -> Vec<(String, String)> {

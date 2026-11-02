@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::iter::successors;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use maki_lua_macro::{lua_class, lua_fn, lua_table};
-use mlua::{Lua, MultiValue, Value as LuaValue};
+use mlua::{Lua, MultiValue, Table, Value as LuaValue};
 use regex::{Error as RegexError, Regex};
-use tree_sitter::{Query, QueryCursor, QueryPredicateArg, StreamingIterator};
+use tree_sitter::{Node, Query, QueryCursor, QueryPredicateArg, StreamingIterator};
 
 use crate::docs::{FnDoc, ParamDoc};
 use crate::language::Language;
@@ -21,33 +22,35 @@ const KNOWN_PREDICATES: &[&str] = &[
     "has-parent?",
 ];
 
+const ITER_PARAMS: &[ParamDoc] = &[
+    ParamDoc {
+        name: "{node}",
+        ty: "Node",
+        desc: "Root node to search within.",
+    },
+    ParamDoc {
+        name: "{source}",
+        ty: "string",
+        desc: "Source text the tree was parsed from.",
+    },
+    ParamDoc {
+        name: "{start_row?}",
+        ty: "integer",
+        desc: "Only match rows >= this value (0-based).",
+    },
+    ParamDoc {
+        name: "{stop_row?}",
+        ty: "integer",
+        desc: "Only match rows < this value (0-based).",
+    },
+];
+
 #[allow(non_upper_case_globals)]
 const iter_captures__doc: FnDoc = FnDoc {
     name: "iter_captures",
     args: "{node}, {source}, {start_row?}, {stop_row?}",
     desc: "Iterates over every capture matched by this query. Each call to the returned iterator yields `(capture_index, node, metadata, match, active)`. Use this when you care about individual captures rather than whole pattern matches.",
-    params: &[
-        ParamDoc {
-            name: "{node}",
-            ty: "Node",
-            desc: "Root node to search within.",
-        },
-        ParamDoc {
-            name: "{source}",
-            ty: "string",
-            desc: "Source text the tree was parsed from.",
-        },
-        ParamDoc {
-            name: "{start_row?}",
-            ty: "integer",
-            desc: "Only match rows >= this value (0-based).",
-        },
-        ParamDoc {
-            name: "{stop_row?}",
-            ty: "integer",
-            desc: "Only match rows < this value (0-based).",
-        },
-    ],
+    params: ITER_PARAMS,
     returns: "(function) Iterator yielding (integer, Node, table, table, integer).",
     guard: None,
     value: false,
@@ -59,28 +62,7 @@ const iter_matches__doc: FnDoc = FnDoc {
     name: "iter_matches",
     args: "{node}, {source}, {start_row?}, {stop_row?}",
     desc: "Iterates over every full pattern match in this query. Each call to the returned iterator yields `(pattern_index, captures, metadata, active)` where captures is a table keyed by capture index. Use this when you need all captures for a pattern together.",
-    params: &[
-        ParamDoc {
-            name: "{node}",
-            ty: "Node",
-            desc: "Root node to search within.",
-        },
-        ParamDoc {
-            name: "{source}",
-            ty: "string",
-            desc: "Source text the tree was parsed from.",
-        },
-        ParamDoc {
-            name: "{start_row?}",
-            ty: "integer",
-            desc: "Only match rows >= this value (0-based).",
-        },
-        ParamDoc {
-            name: "{stop_row?}",
-            ty: "integer",
-            desc: "Only match rows < this value (0-based).",
-        },
-    ],
+    params: ITER_PARAMS,
     returns: "(function) Iterator yielding (integer, table, table, integer).",
     guard: None,
     value: false,
@@ -222,16 +204,20 @@ struct CaptureEntry {
     metadata: HashMap<String, String>,
 }
 
+fn metadata_table(lua: &mlua::Lua, metadata: &HashMap<String, String>) -> mlua::Result<Table> {
+    let table = lua.create_table()?;
+    for (k, v) in metadata {
+        table.set(k.as_str(), v.as_str())?;
+    }
+    Ok(table)
+}
+
 impl IterEntry for CaptureEntry {
     fn to_lua_values(&self, lua: &mlua::Lua) -> mlua::Result<MultiValue> {
-        let meta_table = lua.create_table()?;
-        for (k, v) in &self.metadata {
-            meta_table.set(k.as_str(), v.as_str())?;
-        }
         Ok(MultiValue::from_iter([
             LuaValue::Integer((self.capture_index + 1) as i64),
             lua.pack(self.node.clone())?,
-            LuaValue::Table(meta_table),
+            LuaValue::Table(metadata_table(lua, &self.metadata)?),
             LuaValue::Table(lua.create_table()?),
             LuaValue::Integer(1),
         ]))
@@ -254,14 +240,10 @@ impl IterEntry for MatchEntry {
             }
             captures_table.raw_set((*cap_idx as i64) + 1, nodes_table)?;
         }
-        let meta_table = lua.create_table()?;
-        for (k, v) in &self.metadata {
-            meta_table.set(k.as_str(), v.as_str())?;
-        }
         Ok(MultiValue::from_iter([
             LuaValue::Integer((self.pattern_index + 1) as i64),
             LuaValue::Table(captures_table),
-            LuaValue::Table(meta_table),
+            LuaValue::Table(metadata_table(lua, &self.metadata)?),
             LuaValue::Integer(1),
         ]))
     }
@@ -558,42 +540,32 @@ fn eval_any_of(
     })
 }
 
+fn capture_and_kind<'tree, 'args>(
+    captures: &[tree_sitter::QueryCapture<'tree>],
+    args: &'args [QueryPredicateArg],
+) -> Option<(Node<'tree>, &'args str)> {
+    let QueryPredicateArg::Capture(idx) = args.first()? else {
+        return None;
+    };
+    let QueryPredicateArg::String(kind) = args.get(1)? else {
+        return None;
+    };
+    let capture = captures.iter().find(|c| c.index == *idx)?;
+    Some((capture.node, kind.as_ref()))
+}
+
 fn eval_has_ancestor(
     captures: &[tree_sitter::QueryCapture<'_>],
     args: &[QueryPredicateArg],
 ) -> bool {
-    let Some(QueryPredicateArg::Capture(idx)) = args.first() else {
-        return false;
-    };
-    let Some(QueryPredicateArg::String(type_name)) = args.get(1) else {
-        return false;
-    };
-    let Some(cap) = captures.iter().find(|c| c.index == *idx) else {
-        return false;
-    };
-    let mut current = cap.node.parent();
-    while let Some(parent) = current {
-        if parent.kind() == type_name.as_ref() {
-            return true;
-        }
-        current = parent.parent();
-    }
-    false
+    capture_and_kind(captures, args).is_some_and(|(node, kind)| {
+        successors(node.parent(), |n| n.parent()).any(|n| n.kind() == kind)
+    })
 }
 
 fn eval_has_parent(captures: &[tree_sitter::QueryCapture<'_>], args: &[QueryPredicateArg]) -> bool {
-    let Some(QueryPredicateArg::Capture(idx)) = args.first() else {
-        return false;
-    };
-    let Some(QueryPredicateArg::String(type_name)) = args.get(1) else {
-        return false;
-    };
-    let Some(cap) = captures.iter().find(|c| c.index == *idx) else {
-        return false;
-    };
-    cap.node
-        .parent()
-        .is_some_and(|p| p.kind() == type_name.as_ref())
+    capture_and_kind(captures, args)
+        .is_some_and(|(node, kind)| node.parent().is_some_and(|p| p.kind() == kind))
 }
 
 fn lua_to_usize(v: LuaValue) -> Option<usize> {
