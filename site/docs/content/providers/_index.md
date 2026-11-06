@@ -486,6 +486,53 @@ Without `thinking_fields`, maki sends `"thinking": {"type": "disabled"}` when th
 
 You can also create a custom provider interactively with `maki auth login` and choosing the custom option. That writes a starter entry to this file.
 
+### Coming from Codex
+
+A custom provider in Codex's `~/.codex/config.toml` becomes an entry in this file:
+
+| Codex | `providers.toml` |
+|-------|------------------|
+| `[model_providers.<id>]` | `[<id>]`, in lowercase with `-` between words |
+| `name` | `display_name` |
+| `base_url` | `base_url` |
+| `env_key` | `api_key_env` |
+| no `env_key` | `api_key = ""`, because a custom provider always needs a key |
+| `wire_api = "responses"` | `protocol = "openai-responses"` |
+| `http_headers` | `[<id>.headers]` |
+| `env_http_headers` | `[<id>.headers]`, with the variable as `${VAR}` |
+| `model` with `model_provider = "<id>"` | `default_model = "<id>/<model>"` |
+
+```toml
+# ~/.codex/config.toml
+model = "gpt-5.5"
+model_provider = "team-proxy"
+
+[model_providers.team-proxy]
+name = "Team proxy"
+base_url = "https://proxy.example.com/v1"
+env_key = "TEAM_PROXY_KEY"
+wire_api = "responses"
+```
+
+```toml
+# providers.toml
+[team-proxy]
+display_name = "Team proxy"
+protocol = "openai-responses"
+base_url = "https://proxy.example.com/v1"
+api_key_env = "TEAM_PROXY_KEY"
+default_model = "team-proxy/gpt-5.5"
+discover_models = true
+```
+
+Codex leaves a header out when its variable is unset. Maki fails the provider and names the variable.
+
+The rest of a Codex setup:
+
+- `openai_base_url` becomes `base_url` under `[openai]`, see [Base URL Overrides](#base-url-overrides).
+- For a provider maki ships, such as `ollama`, `mistral` or `openrouter`, use the built-in one and run `maki auth login <slug>`.
+- `requires_openai_auth`, `auth`, `gateway_oauth`, `aws` and `query_params` have no equivalent yet.
+
 ### Aperture overrides
 
 Aperture proxies upstream providers, exposing each model as `aperture/<upstream>/<model>`. Overrides keyed by upstream provider id live under `[aperture.overrides]`:
